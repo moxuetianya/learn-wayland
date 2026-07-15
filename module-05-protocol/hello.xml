@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="hello">
+
+  <copyright>
+    Learn Wayland - 自定义协议示例
+  </copyright>
+
+  <interface name="hello" version="1">
+    <description summary="一个简单的自定义协议接口">
+      演示 Wayland 协议如何定义 request/event/enum，
+      以及 wayland-scanner 如何生成 C 代码。
+    </description>
+
+    <request name="say_hello">
+      <description summary="向服务器发送问候消息"/>
+      <arg name="message" type="string" summary="要发送的消息内容"/>
+    </request>
+
+    <request name="add_numbers">
+      <description summary="请求服务器计算两个数的和"/>
+      <arg name="a" type="int" summary="第一个数"/>
+      <arg name="b" type="int" summary="第二个数"/>
+    </request>
+
+    <event name="hello_reply">
+      <description summary="服务器返回的问候回复"/>
+      <arg name="reply" type="string" summary="服务器的回复内容"/>
+    </event>
+
+    <event name="sum_result">
+      <description summary="服务器返回加法结果"/>
+      <arg name="a" type="int" summary="被加数"/>
+      <arg name="b" type="int" summary="加数"/>
+      <arg name="sum" type="int" summary="和"/>
+    </event>
+
+    <event name="server_info">
+      <description summary="服务器元信息"/>
+      <arg name="protocol_version" type="uint" summary="协议版本"/>
+      <arg name="server_name" type="string" summary="服务器名称"/>
+    </event>
+
+    <enum name="reply_level">
+      <description summary="回复类型枚举"/>
+      <entry name="normal" value="0" summary="普通回复"/>
+      <entry name="verbose" value="1" summary="详细回复"/>
+    </enum>
+  </interface>
+</protocol>
