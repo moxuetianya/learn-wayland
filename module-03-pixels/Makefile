@@ -10,13 +10,16 @@ all: pixel-anim
 xdg-shell-client-protocol.h: $(XDG_SHELL_XML)
 	wayland-scanner client-header $< $@
 
+xdg-shell-protocol.c: $(XDG_SHELL_XML)
+	wayland-scanner private-code $< $@
+
 %.o: %.c xdg-shell-client-protocol.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-pixel-anim: main.o
-	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
+pixel-anim: main.o xdg-shell-protocol.o
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 clean:
-	rm -f pixel-anim *.o xdg-shell-client-protocol.h
+	rm -f pixel-anim *.o xdg-shell-client-protocol.h xdg-shell-protocol.c
 
 .PHONY: all clean

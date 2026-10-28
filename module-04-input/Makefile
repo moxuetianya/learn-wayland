@@ -10,13 +10,16 @@ all: input-demo
 xdg-shell-client-protocol.h: $(XDG_SHELL_XML)
 	wayland-scanner client-header $< $@
 
+xdg-shell-protocol.c: $(XDG_SHELL_XML)
+	wayland-scanner private-code $< $@
+
 %.o: %.c xdg-shell-client-protocol.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-input-demo: main.o
-	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
+input-demo: main.o xdg-shell-protocol.o
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 clean:
-	rm -f input-demo *.o xdg-shell-client-protocol.h
+	rm -f input-demo *.o xdg-shell-client-protocol.h xdg-shell-protocol.c
 
 .PHONY: all clean

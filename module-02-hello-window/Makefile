@@ -10,13 +10,16 @@ all: hello-window
 xdg-shell-client-protocol.h: $(XDG_SHELL_XML)
 	wayland-scanner client-header $< $@
 
+xdg-shell-protocol.c: $(XDG_SHELL_XML)
+	wayland-scanner private-code $< $@
+
 %.o: %.c xdg-shell-client-protocol.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-hello-window: main.o
-	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
+hello-window: main.o xdg-shell-protocol.o
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 clean:
-	rm -f hello-window *.o xdg-shell-client-protocol.h
+	rm -f hello-window *.o xdg-shell-client-protocol.h xdg-shell-protocol.c
 
 .PHONY: all clean

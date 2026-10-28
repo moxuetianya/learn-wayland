@@ -31,7 +31,7 @@ create_buffer(struct client_state *st, int width, int height)
 
     int fd = -1;
     for (int i = 0; i < 8; i++) {
-        char name[] = "/wayland-module2-XXXXXX";
+        char name[] = "/tmp/wayland-module2-XXXXXX";
         fd = mkstemp(name);
         if (fd >= 0) {
             unlink(name);

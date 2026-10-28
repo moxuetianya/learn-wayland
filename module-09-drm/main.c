@@ -144,8 +144,31 @@ static void destroy_dumb_fb(int fd, struct dumb_fb *fb) {
     memset(fb, 0, sizeof(*fb));
 }
 
+/* 打开 DRM 设备: 优先 $DRM_CARD 指定, 否则自动扫描第一个 card[0-9]*。
+ * 显卡不一定叫 card0 —— 例如 virtio-gpu 常与 simpledrm 共存时注册为 card1。 */
+static int open_drm_card(const char **used) {
+    const char *env = getenv("DRM_CARD");
+    if (env && *env) {
+        *used = env;
+        return open(env, O_RDWR | O_CLOEXEC);
+    }
+
+    static char path[32];
+    for (int i = 0; i < 16; i++) {
+        snprintf(path, sizeof(path), "/dev/dri/card%d", i);
+        int fd = open(path, O_RDWR | O_CLOEXEC);
+        if (fd >= 0) {
+            *used = path;
+            return fd;
+        }
+    }
+    *used = "(none)";
+    return -1;
+}
+
 int main(void) {
     int fd;
+    const char *card_path = NULL;
     drmModeRes *resources = NULL;
     drmModeConnector *conn = NULL;
     drmModeModeInfo *mode = NULL;
@@ -159,12 +182,14 @@ int main(void) {
     printf("=== 模块 9: DRM/KMS 直接屏幕控制 ===\n");
     printf("从 TTY 运行: Ctrl+Alt+F3 登录后执行 sudo ./drm-demo\n\n");
 
-    fd = open("/dev/dri/card0", O_RDWR | O_CLOEXEC);
+    fd = open_drm_card(&card_path);
     if (fd < 0) {
-        perror("无法打开 /dev/dri/card0");
+        fprintf(stderr, "无法打开任何 /dev/dri/card[0-9]* (可用 DRM_CARD=/dev/dri/cardX 指定)\n");
         fprintf(stderr, "提示: 必须从 TTY 运行且可能需要 sudo\n");
         return 1;
     }
+    printf("使用 DRM 设备: %s%s\n", card_path,
+           getenv("DRM_CARD") ? " (来自 $DRM_CARD)" : " (自动扫描)");
 
     /* Become DRM master so we are allowed to change modes. On a TTY without
      * a running compositor this normally succeeds; if another master (X11 /

@@ -27,6 +27,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
@@ -68,12 +69,25 @@ struct mc_toplevel {
     int32_t pending_w, pending_h;
 };
 
+
+/* ── buffer 生命周期跟踪 ─────────────────────────────────────────
+ * 客户端销毁 wl_buffer (wl_buffer.destroy) 后, wl_resource 即被释放。
+ * 如果我们还握着裸指针, 之后 wl_buffer_send_release() 就是 use-after-free。
+ * 教学要点: 服务端引用客户端资源, 必须挂 destroy 监听。 */
+struct mc_surface;
+
+struct mc_buffer_watch {
+    struct wl_listener listener;   /* 挂在 wl_resource 的 destroy 链上 */
+    struct mc_surface *surface;
+};
 struct mc_surface {
     struct wl_list link;
     struct mc_compositor *compositor;
     struct wl_resource *resource;
     struct wl_resource *pending_buffer;
     struct wl_resource *buffer;
+    struct mc_buffer_watch pending_watch;
+    struct mc_buffer_watch current_watch;
     struct wl_resource *frame_callback;
     int32_t x, y;
     struct mc_toplevel *toplevel;
@@ -92,6 +106,7 @@ struct mc_client {
 struct mc_seat_resource {
     struct wl_list link;
     struct wl_resource *resource;
+    struct mc_compositor *compositor;   /* user_data 是本结构, handler 经此取 c */
 };
 
 struct mc_compositor {
@@ -225,12 +240,37 @@ static int create_screen_fb(struct mc_compositor *c) {
     return 0;
 }
 
+/* 打开 DRM 设备: 优先 $DRM_CARD, 否则自动扫描第一个 card[0-9]*。
+ * 显卡不一定叫 card0 —— 例如 virtio-gpu 常注册为 card1。 */
+static int open_drm_card(const char **used) {
+    const char *env = getenv("DRM_CARD");
+    if (env && *env) {
+        *used = env;
+        return open(env, O_RDWR | O_CLOEXEC);
+    }
+
+    static char path[32];
+    for (int i = 0; i < 16; i++) {
+        snprintf(path, sizeof(path), "/dev/dri/card%d", i);
+        int fd = open(path, O_RDWR | O_CLOEXEC);
+        if (fd >= 0) {
+            *used = path;
+            return fd;
+        }
+    }
+    *used = "(none)";
+    return -1;
+}
+
 static int init_drm(struct mc_compositor *c) {
-    c->drm_fd = open("/dev/dri/card0", O_RDWR | O_CLOEXEC);
+    const char *card_path = NULL;
+    c->drm_fd = open_drm_card(&card_path);
     if (c->drm_fd < 0) {
-        perror("open /dev/dri/card0");
+        fprintf(stderr, "cannot open any /dev/dri/card[0-9]* (set DRM_CARD=/dev/dri/cardX)\n");
         fprintf(stderr, "Must run from TTY with sudo\n"); return -1;
     }
+    printf("using DRM device: %s%s\n", card_path,
+           getenv("DRM_CARD") ? " (from $DRM_CARD)" : " (auto-scan)");
     if (drmSetMaster(c->drm_fd) == 0) c->drm_master = true;
     else fprintf(stderr, "Warning: drmSetMaster failed (%s)\n", strerror(errno));
 
@@ -423,7 +463,8 @@ static void seat_resource_destroy(struct wl_resource *resource) {
 
 static void seat_get_pointer(struct wl_client *client,
                               struct wl_resource *resource, uint32_t id) {
-    struct mc_compositor *c = wl_resource_get_user_data(resource);
+    struct mc_seat_resource *sr = wl_resource_get_user_data(resource);
+    struct mc_compositor *c = sr->compositor;
     struct mc_client *mcc = find_mc_client(c, client);
     struct wl_resource *ptr = wl_resource_create(
         client, &wl_pointer_interface, wl_resource_get_version(resource), id);
@@ -441,7 +482,8 @@ static void seat_get_pointer(struct wl_client *client,
 
 static void seat_get_keyboard(struct wl_client *client,
                                struct wl_resource *resource, uint32_t id) {
-    struct mc_compositor *c = wl_resource_get_user_data(resource);
+    struct mc_seat_resource *sr = wl_resource_get_user_data(resource);
+    struct mc_compositor *c = sr->compositor;
     struct mc_client *mcc = find_mc_client(c, client);
     struct wl_resource *kbd = wl_resource_create(
         client, &wl_keyboard_interface, wl_resource_get_version(resource), id);
@@ -455,7 +497,8 @@ static void seat_get_keyboard(struct wl_client *client,
 
 static void seat_get_touch(struct wl_client *client,
                             struct wl_resource *resource, uint32_t id) {
-    struct mc_compositor *c = wl_resource_get_user_data(resource);
+    struct mc_seat_resource *sr = wl_resource_get_user_data(resource);
+    struct mc_compositor *c = sr->compositor;
     struct wl_resource *t = wl_resource_create(
         client, &wl_touch_interface, wl_resource_get_version(resource), id);
     if (!t) { wl_client_post_no_memory(client); return; }
@@ -478,10 +521,17 @@ static void seat_bind(struct wl_client *client, void *data,
     if (!sr) { wl_client_post_no_memory(client); return; }
     sr->resource = wl_resource_create(client, &wl_seat_interface, version, id);
     if (!sr->resource) { free(sr); wl_client_post_no_memory(client); return; }
-    wl_resource_set_implementation(sr->resource, &seat_impl, c, seat_resource_destroy);
+    /* user_data 必须传 sr (堆上的 seat 资源记录), 而不是 c:
+     * seat_resource_destroy 会把它当 mc_seat_resource 释放 —— 传 c 会
+     * 在客户端断开时 free 栈上的 compositor 结构并踩坏内存 */
+    sr->compositor = c;
+    wl_resource_set_implementation(sr->resource, &seat_impl, sr, seat_resource_destroy);
     wl_list_insert(&c->seat_resources, &sr->link);
     wl_seat_send_capabilities(sr->resource, c->seat_caps);
-    wl_seat_send_name(sr->resource, "seat0");
+    /* name 事件是 wl_seat v4 才引入的: 对旧版本客户端发送属于协议违规,
+     * 会让 listener 槽位为 NULL 的简化客户端 (如 weston-simple-*) 直接 abort */
+    if (wl_resource_get_version(sr->resource) >= WL_SEAT_NAME_SINCE_VERSION)
+        wl_seat_send_name(sr->resource, "seat0");
 }
 
 static void seat_set_pointer_focus(struct mc_compositor *c,
@@ -582,6 +632,28 @@ static const struct wl_region_interface region_impl = {
 /* wl_surface                                                         */
 /* ================================================================== */
 
+
+static void buffer_watched_destroyed(struct wl_listener *l, void *data) {
+    struct mc_buffer_watch *w = wl_container_of(l, w, listener);
+    struct wl_resource *res = data;
+    struct mc_surface *s = w->surface;
+    if (s->pending_buffer == res) s->pending_buffer = NULL;
+    if (s->buffer == res)         s->buffer = NULL;
+    wl_list_remove(&l->link);
+    wl_list_init(&l->link);
+}
+
+/* 令 w 开始监听 buf 的销毁; buf==NULL 表示取消监听 */
+static void watch_buffer(struct mc_buffer_watch *w, struct mc_surface *s,
+                         struct wl_resource *buf) {
+    wl_list_remove(&w->listener.link);          /* 若已在监听先摘除 (已 init 则 no-op) */
+    wl_list_init(&w->listener.link);
+    if (buf) {
+        w->surface = s;
+        w->listener.notify = buffer_watched_destroyed;
+        wl_resource_add_destroy_listener(buf, &w->listener);
+    }
+}
 static void surface_destroy(struct wl_resource *resource) {
     struct mc_surface *s = wl_resource_get_user_data(resource);
     if (!s) return;
@@ -593,6 +665,8 @@ static void surface_destroy(struct wl_resource *resource) {
         c->grabbed_toplevel = NULL; c->grab_type = GRAB_NONE;
     }
     wl_list_remove(&s->link);
+    wl_list_remove(&s->pending_watch.listener.link);
+    wl_list_remove(&s->current_watch.listener.link);
     if (s->buffer) wl_buffer_send_release(s->buffer);
     if (s->frame_callback) wl_resource_destroy(s->frame_callback);
     free(s);
@@ -608,7 +682,9 @@ static void surface_attach(struct wl_client *client, struct wl_resource *r,
     (void)client; (void)x; (void)y;
     struct mc_surface *s = wl_resource_get_user_data(r);
     s->pending_buffer = buffer;
+    watch_buffer(&s->pending_watch, s, buffer);
 }
+
 
 static void surface_damage(struct wl_client *c, struct wl_resource *r,
                             int32_t x, int32_t y, int32_t w, int32_t h) {
@@ -632,9 +708,12 @@ static void surface_commit(struct wl_client *client, struct wl_resource *r) {
     (void)client;
     struct mc_surface *s = wl_resource_get_user_data(r);
     struct mc_compositor *c = s->compositor;
+    /* 客户端可能已销毁旧 buffer — watch 机制保证指针安全 */
     if (s->buffer && s->buffer != s->pending_buffer)
         wl_buffer_send_release(s->buffer);
     s->buffer = s->pending_buffer;
+    watch_buffer(&s->current_watch, s, s->buffer);
+    watch_buffer(&s->pending_watch, s, NULL);
     if (s->toplevel && !s->toplevel->mapped && s->buffer) s->toplevel->mapped = true;
     mc_repaint(c);
     if (s->frame_callback) {
@@ -686,6 +765,8 @@ static void compositor_create_surface(struct wl_client *client,
                                       wl_resource_get_version(resource), id);
     if (!s->resource) { free(s); wl_client_post_no_memory(client); return; }
     wl_resource_set_implementation(s->resource, &surface_impl, s, surface_destroy);
+    wl_list_init(&s->pending_watch.listener.link);
+    wl_list_init(&s->current_watch.listener.link);
     wl_list_insert(c->surfaces.prev, &s->link);
 }
 
@@ -918,6 +999,8 @@ static const struct xdg_toplevel_interface xdg_toplevel_impl = {
  * xdg_toplevel implementations on resource creation.  We override the
  * get_toplevel entry in xdg_surface_impl at the call-site below.
  */
+static const struct xdg_surface_interface xdg_surface_impl_init;
+
 static void xdg_surface_real_get_toplevel(struct wl_client *client,
                                            struct wl_resource *resource,
                                            uint32_t id) {
@@ -1249,6 +1332,15 @@ static void cleanup(struct mc_compositor *c) {
 
 int main(void) {
     struct mc_compositor c = {0};
+
+    /* sudo/SSH 环境会清空 XDG_RUNTIME_DIR, 导致 socket 创建失败。
+     * 回退到共享目录 /tmp/wayland-runtime, 客户端可用
+     * XDG_RUNTIME_DIR=/tmp/wayland-runtime WAYLAND_DISPLAY=wayland-N 连接。 */
+    if (!getenv("XDG_RUNTIME_DIR")) {
+        mkdir("/tmp/wayland-runtime", 0755);
+        setenv("XDG_RUNTIME_DIR", "/tmp/wayland-runtime", 1);
+    }
+
     c.drm_fd = -1;
     c.seat_caps = WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD;
     wl_list_init(&c.clients);
@@ -1272,6 +1364,18 @@ int main(void) {
 
     const char *socket = wl_display_add_socket_auto(c.display);
     if (!socket) { fprintf(stderr, "socket failed\n"); cleanup(&c); return 1; }
+
+    /* root 运行 + 普通用户客户端连接时, socket 默认 0755 会让客户端因无写权限
+     * connect 失败 (EACCES)。教学场景放开连接权限;
+     * 生产 compositor 走 logind 授权 + 同用户运行, 不存在此问题。 */
+    {
+        char sock_path[256];
+        snprintf(sock_path, sizeof(sock_path), "%s/%s",
+                 getenv("XDG_RUNTIME_DIR"), socket);
+        if (chmod(sock_path, 0777) != 0)
+            fprintf(stderr, "warning: chmod %s failed (%s)\n", sock_path,
+                    strerror(errno));
+    }
 
     if (!wl_global_create(c.display, &wl_compositor_interface, 4, &c, compositor_bind)) {
         fprintf(stderr, "wl_compositor global failed\n"); cleanup(&c); return 1;

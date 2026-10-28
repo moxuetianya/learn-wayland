@@ -1,0 +1,22 @@
+# 构建产物
+*.o
+
+# 各模块的可执行文件
+module-01-connection/list-globals
+module-02-hello-window/hello-window
+module-03-pixels/pixel-anim
+module-04-input/input-demo
+module-05-protocol/hello-client
+module-06-frame-cb/frame-cb
+module-07-cairo/cairo-demo
+module-08-server-skeleton/hello-server
+module-09-drm/drm-demo
+module-10-libinput/libinput-demo
+module-11-tty-compositor/compositor
+module-12-full-compositor/compositor
+module-13-audio/audio-lab
+module-14-session/session-info
+
+# wayland-scanner 生成物
+*-protocol.h
+*-protocol.c
