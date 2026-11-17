@@ -86,7 +86,7 @@ wl_surface.commit()                 ──请求→  首帧像素(尺寸已对�
 ```
 客户端进程                                   合成器进程
 ──────────                                  ──────────
-mkstemp("/wayland-xxx") → fd ──┐
+mkstemp("/tmp/wayland-xxx") → fd ──┐
 ftruncate(fd, size)            │ wl_shm_create_pool(shm, fd, size)
 mmap(fd) ──────→ [像素内存] ←──┼──────────── mmap(同一 fd) ←──┐
    逐字节写渐变                │                              │

@@ -56,7 +56,7 @@ create_buffer(struct client_state *st, int width, int height)
      * 循环 8 次只是防止随机后缀撞名。 */
     int fd = -1;
     for (int i = 0; i < 8; i++) {
-        char name[] = "/tmp/wayland-module2-XXXXXX";
+        char name[] = "/tmp/wayland-mod2-XXXXXX";
         fd = mkstemp(name);
         if (fd >= 0) {
             unlink(name);
@@ -148,6 +148,13 @@ xdg_surface_configure(void *data, struct xdg_surface *xdg_surface, uint32_t seri
      * (toplevel 的 configure 可能已经改写过 st->width/height)。 */
     if (st->buffer == NULL) {
         st->buffer = create_buffer(st, st->width, st->height);
+        if (st->buffer == NULL) {
+            /* 拿不到画布就没有可提交的内容, 继续循环只会
+             * 反复 attach(NULL), 得到一个永远空白的窗口;
+             * 不如直接停循环, 让错误在清理路径上收场。 */
+            st->running = 0;
+            return;
+        }
     }
     /* attach 把 buffer 挂到 pending, commit 原子生效 —— 这是
      * attach/commit 模型的首次登场。之后窗口再次 configure 时
