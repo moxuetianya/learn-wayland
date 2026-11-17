@@ -1,5 +1,7 @@
 # 模块 2：第一个 Wayland 窗口
 
+> 🗺️ **全景定位**: [docs/00 — Linux 现代 GUI 全景地图](../docs/00-big-picture.md)
+
 > 模块 1 只是"看清单"：连上合成器、打印所有全局对象。本模块第一次
 > **使用**这份清单——bind `wl_compositor` / `wl_shm` / `xdg_wm_base`，
 > 走通"连接 → 角色协商 → 共享内存画布 → 首帧上屏"的完整最小闭环，

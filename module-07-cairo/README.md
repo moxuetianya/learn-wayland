@@ -1,5 +1,7 @@
 # 模块 7：Cairo 软件渲染——把成熟 2D 库"零拷贝"焊到 wl_shm 上
 
+> 🗺️ **全景定位**: [docs/00 — Linux 现代 GUI 全景地图](../docs/00-big-picture.md)
+
 > 模块 3 手写像素太原始，模块 6 学会了帧节奏；本模块解决"画得好看"——引入工业级
 > 2D 库 cairo。关键在于：**不换渲染通路、不加一次拷贝**，让 cairo 直接在 wl_shm
 > buffer 的 mmap 内存上作画。"第三方渲染库 + wl_shm" 是 Wayland 最低门槛也最通用

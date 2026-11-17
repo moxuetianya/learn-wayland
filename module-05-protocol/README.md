@@ -1,5 +1,7 @@
 # 模块 5：自定义协议——XML、wayland-scanner 与 wire format
 
+> 🗺️ **全景定位**: [docs/00 — Linux 现代 GUI 全景地图](../docs/00-big-picture.md)
+
 > 模块 1-4 我们一直在"消费"现成的协议：wl_registry、wl_shm、xdg_shell 拿来就用。
 > 本模块反过来问：**这些协议本身从哪来？** 答案是 XML 加代码生成器。你将亲手
 > 定义一个 `hello` 协议，用 wayland-scanner 编译成 C API，并配合模块 8 的服务端

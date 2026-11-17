@@ -1,5 +1,7 @@
 # 模块 8：libwayland-server 骨架——第一个 Wayland 服务端
 
+> 🗺️ **全景定位**: [docs/00 — Linux 现代 GUI 全景地图](../docs/00-big-picture.md)
+
 > 模块 1-7 你一直坐在客户端这一侧：连接、开窗、交像素、收输入。从本模块起
 > 换到桌子对面——用 libwayland-server 从零写一个协议服务端，把模块 5 定义
 > 的 `hello` 协议变成真正能通信的 echo server。约 90 行 C，是模块 11 合成器

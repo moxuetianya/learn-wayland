@@ -1,5 +1,7 @@
 # 模块 11：最小化 TTY Wayland Compositor
 
+> 🗺️ **全景定位**: [docs/00 全景地图](../docs/00-big-picture.md) · [docs/01 显卡与显示](../docs/01-gpu-and-display.md)
+
 > 把模块 8 的 `wl_display` 骨架、模块 9 的 DRM/KMS、模块 10 的 libinput 拧成一个
 > 真正能从 TTY 启动、能接受客户端连接、能把客户端像素送上屏幕的最小合成器。
 > 约 900 行 C，是整个课程的"会师之作"。
@@ -168,6 +170,8 @@ wl_surface.commit()         ──────→   surface_commit():
 - **pending/current 双态**是 Wayland 的原子更新模型：attach 只是"暂存"，commit 才
   "生效"。本模块没有 damage/offset 等其它 pending 状态，但机制相同。
 - **release 语义**：客户端提交 buffer 后就失去了它的写权，直到合成器发 release。
+  本模块还用 `watch_buffer()` 给 pending/current 各挂一个销毁监听：客户端提前销毁
+  buffer 时，监听器把指针安全置 NULL，避免 use-after-free。
   没有这一步，客户端的双缓冲池会立刻"饿死"——这是新手合成器最常见的 bug。
 - **frame callback 是一次性的**：协议规定 done 之后资源即销毁，客户端每帧重新
   `wl_surface.frame()` 请求新的。这是"请问下一帧什么时候画"的节流问答，
@@ -182,7 +186,9 @@ wl_surface.commit()         ──────→   surface_commit():
 
 ### 3.1 init_drm() —— 接管输出
 
-1. `open("/dev/dri/card0")` + `drmSetMaster()`（root 下必成；失败说明有别的会话）
+1. `open_drm_card()`：优先环境变量 `$DRM_CARD` 指定的设备，否则自动扫描
+   第一个可打开的 `/dev/dri/card[0-9]*`（多显卡/命名不是 card0 的机器友好），
+   然后 `drmSetMaster()`（root 下必成；失败说明有别的会话）
 2. `drmModeGetResources()` 枚举全部 connector/CRTC/encoder
 3. 挑第一个 `DRM_MODE_CONNECTED` 且有模式的 connector；模式优先
    `DRM_MODE_TYPE_PREFERRED`（显示器 EDID 里标注的推荐分辨率）
