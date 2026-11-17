@@ -53,6 +53,8 @@ enum mc_grab_type { GRAB_NONE = 0, GRAB_MOVE, GRAB_RESIZE };
 
 struct mc_compositor;
 
+/* xdg-shell 的"窗口角色"对象：wl_surface 只管像素，窗口语义（标题、
+ * 尺寸协商、状态标志）全部记账在这里。一个 surface 最多挂一个 toplevel。 */
 struct mc_toplevel {
     struct wl_list link;
     struct mc_compositor *compositor;
@@ -61,7 +63,11 @@ struct mc_toplevel {
     struct wl_resource *xdg_toplevel_resource;
     char *title;
     int32_t geo_x, geo_y, geo_w, geo_h;
+    /* 最近一次 configure 的序号：客户端 ack_configure 时带回同一个 serial，
+     * 合成器据此知道客户端当前应用的是哪一次尺寸协商 */
     uint32_t configure_serial;
+    /* 本实现把"首次携带 buffer 的 commit"当作 mapped；更严格的做法是
+     * 只承认 ack_configure 之后的那次 commit */
     bool mapped;
     bool maximized;
     bool fullscreen;
@@ -380,6 +386,8 @@ static void mc_repaint(struct mc_compositor *c) {
 /* XKB Keymap                                                         */
 /* ================================================================== */
 
+/* keymap 文本有几十 KB，走 socket 逐字节传太浪费；Wayland 的做法是写进
+ * memfd 后把 fd 交给客户端，客户端 mmap 直接共享同一份内容 */
 static int create_keymap_fd(struct mc_compositor *c) {
     char *str = xkb_keymap_get_as_string(c->xkb_keymap, XKB_KEYMAP_FORMAT_TEXT_V1);
     size_t len = strlen(str);
@@ -491,6 +499,8 @@ static void seat_get_keyboard(struct wl_client *client,
     wl_resource_set_implementation(kbd, &keyboard_impl, c, NULL);
     if (mcc) { mcc->keyboard = kbd; mcc->keyboard_keymap_sent = false; }
 
+    /* 客户端可能在焦点已经存在之后才 bind seat：迟到的 keyboard 资源要
+     * 补发一次 enter，否则这个客户端永远收不到按键 */
     if (c->keyboard_focus && wl_resource_get_client(c->keyboard_focus->resource) == client)
         seat_set_keyboard_focus(c, c->keyboard_focus);
 }
@@ -574,6 +584,8 @@ static void seat_set_keyboard_focus(struct mc_compositor *c,
         struct mc_client *mc = find_mc_client(
             c, wl_resource_get_client(surface->resource));
         if (mc && mc->keyboard) {
+            /* keymap 必须先于第一个 enter 送达，客户端才能解读随后的
+             * keycode；每个客户端只需要发一次 */
             if (!mc->keyboard_keymap_sent) {
                 int fd = create_keymap_fd(c);
                 if (fd >= 0) {
@@ -596,6 +608,8 @@ static void seat_set_keyboard_focus(struct mc_compositor *c,
     }
 }
 
+/* 简化：把修饰键状态广播给所有客户端。真实实现只发给键盘焦点客户端——
+ * 其他客户端不应该知道你按着 Shift */
 static void seat_send_modifiers(struct mc_compositor *c) {
     xkb_mod_mask_t dep = xkb_state_serialize_mods(c->xkb_state, XKB_STATE_MODS_DEPRESSED);
     xkb_mod_mask_t lat = xkb_state_serialize_mods(c->xkb_state, XKB_STATE_MODS_LATCHED);
@@ -659,6 +673,8 @@ static void surface_destroy(struct wl_resource *resource) {
     if (!s) return;
     struct mc_compositor *c = s->compositor;
     if (s->toplevel) { s->toplevel->surface = NULL; s->toplevel = NULL; }
+    /* surface 可能随时被客户端单方面销毁：凡是存了裸指针的地方都要在
+     * 析构路径里清掉，否则下一次 repaint / 输入路由就是 use-after-free */
     if (c->pointer_focus == s) c->pointer_focus = NULL;
     if (c->keyboard_focus == s) c->keyboard_focus = NULL;
     if (c->grabbed_toplevel && c->grabbed_toplevel->surface == s) {
@@ -712,6 +728,7 @@ static void surface_commit(struct wl_client *client, struct wl_resource *r) {
     if (s->buffer && s->buffer != s->pending_buffer)
         wl_buffer_send_release(s->buffer);
     s->buffer = s->pending_buffer;
+    /* 首次携带 buffer 的 commit 即视为窗口"可见"（mapped） */
     watch_buffer(&s->current_watch, s, s->buffer);
     watch_buffer(&s->pending_watch, s, NULL);
     if (s->toplevel && !s->toplevel->mapped && s->buffer) s->toplevel->mapped = true;
@@ -765,6 +782,7 @@ static void compositor_create_surface(struct wl_client *client,
                                       wl_resource_get_version(resource), id);
     if (!s->resource) { free(s); wl_client_post_no_memory(client); return; }
     wl_resource_set_implementation(s->resource, &surface_impl, s, surface_destroy);
+    /* 插到链表尾 = 最顶层：绘制按头→尾（画家算法），命中测试按尾→头 */
     wl_list_init(&s->pending_watch.listener.link);
     wl_list_init(&s->current_watch.listener.link);
     wl_list_insert(c->surfaces.prev, &s->link);
@@ -814,6 +832,9 @@ static void xdg_wm_base_pong(struct wl_client *client, struct wl_resource *r, ui
 /* xdg-shell: toplevel_send_configure                                 */
 /* ================================================================== */
 
+/* xdg-shell 规定两个事件成对出现：xdg_toplevel.configure 携带内容
+ * （尺寸 + 状态位），紧随其后的 xdg_surface.configure 携带本次协商的
+ * serial，客户端 ack 时带回同一个 serial 对账 */
 static void toplevel_send_configure(struct mc_toplevel *t, int32_t w, int32_t h) {
     t->pending_w = w; t->pending_h = h;
     t->configure_serial = wl_display_next_serial(t->compositor->display);
@@ -931,6 +952,8 @@ static void xdg_toplevel_move(struct wl_client *client, struct wl_resource *r,
     (void)client; (void)seat; (void)serial;
     struct mc_toplevel *t = wl_resource_get_user_data(r);
     if (!t->surface) return;
+    /* 记录按下点相对窗口左上角的偏移；此后 motion 全部被合成器截获，
+     * 用 pointer - offset 反算窗口位置，直到按键释放 */
     t->compositor->grabbed_toplevel = t;
     t->compositor->grab_type = GRAB_MOVE;
     t->compositor->grab_x = t->compositor->pointer_x - t->surface->x;
@@ -1013,6 +1036,8 @@ static void xdg_surface_real_get_toplevel(struct wl_client *client,
                                     &xdg_toplevel_impl, t, toplevel_resource_destroy);
     wl_resource_set_implementation(resource, &xdg_surface_impl_init, t,
                                     xdg_surface_resource_destroy);
+    /* 协议要求：客户端在收到第一个 configure 之前不得 commit。
+     * (0,0) 表示"尺寸由客户端自己定" */
     toplevel_send_configure(t, 0, 0);
 }
 
@@ -1034,6 +1059,7 @@ static void xdg_wm_base_real_get_xdg_surface(struct wl_client *client,
         wl_resource_post_error(resource, XDG_WM_BASE_ERROR_ROLE, "invalid surface");
         return;
     }
+    /* 角色唯一性：一个 surface 只能有一个角色，重复赋角色是协议错误 */
     if (surface->toplevel) {
         wl_resource_post_error(resource, XDG_WM_BASE_ERROR_ROLE,
                                "surface already has a role"); return;
@@ -1074,6 +1100,9 @@ static void xdg_wm_base_real_bind(struct wl_client *client, void *data,
 /* Window Management                                                  */
 /* ================================================================== */
 
+/* 从链表尾（最顶层）向头做矩形命中测试，所以点击总是先问最上层窗口。
+ * 简化：直接拿 buffer 尺寸当窗口边界，忽略 set_window_geometry 与
+ * input region */
 static struct mc_surface *surface_at(struct mc_compositor *c, int32_t sx, int32_t sy) {
     struct mc_surface *s;
     /* iterate tail->head (topmost first) */
@@ -1091,6 +1120,7 @@ static struct mc_surface *surface_at(struct mc_compositor *c, int32_t sx, int32_
     return NULL;
 }
 
+/* 置顶 = 摘下来插到链表尾。z 序没有独立的数据结构，就是链表顺序本身 */
 static void raise_surface(struct mc_compositor *c, struct mc_surface *s) {
     wl_list_remove(&s->link);
     wl_list_insert(c->surfaces.prev, &s->link);
@@ -1108,6 +1138,7 @@ static struct mc_client *find_mc_client(struct mc_compositor *c,
     return NULL;
 }
 
+/* 客户端断开时清掉可能指向它的焦点/grab，再 repaint 盖掉它留下的像素 */
 static void client_destroy(struct wl_listener *listener, void *data) {
     (void)data;
     struct mc_client *mcc = wl_container_of(listener, mcc, destroy_listener);
@@ -1166,6 +1197,8 @@ static void handle_key_event(struct mc_compositor *c, struct libinput_event *ev)
         if (ctrl && alt && key == KEY_BACKSPACE) {
             printf("Ctrl+Alt+Backspace, terminating\n"); wl_display_terminate(c->display); return;
         }
+        /* close 是"请求"不是"命令"：只发一个事件，客户端自愿销毁——
+         * 它完全可以先弹"要不要保存"，甚至假装没听见 */
         if (alt && key == KEY_F4 && c->keyboard_focus && c->keyboard_focus->toplevel) {
             xdg_toplevel_send_close(c->keyboard_focus->toplevel->xdg_toplevel_resource);
             return;
@@ -1183,6 +1216,8 @@ static void handle_key_event(struct mc_compositor *c, struct libinput_event *ev)
                               ? WL_KEYBOARD_KEY_STATE_PRESSED
                               : WL_KEYBOARD_KEY_STATE_RELEASED);
 
+    /* libinput 给的是 evdev keycode（从 0 计），xkbcommon 的 keycode 从 8
+     * 计（历史偏移），两套编号恒差 8 */
     xkb_keycode_t xkb_code = key + 8;
     xkb_state_update_key(c->xkb_state, xkb_code,
                           state == LIBINPUT_KEY_STATE_PRESSED ? XKB_KEY_DOWN : XKB_KEY_UP);
@@ -1201,6 +1236,7 @@ static void handle_pointer_motion(struct mc_compositor *c, struct libinput_event
     if (c->pointer_x >= c->screen_w) c->pointer_x = c->screen_w - 1;
     if (c->pointer_y >= c->screen_h) c->pointer_y = c->screen_h - 1;
 
+    /* grab 期间 motion 不再路由给客户端，全部用于搬窗口 */
     if (c->grab_type == GRAB_MOVE && c->grabbed_toplevel && c->grabbed_toplevel->surface) {
         c->grabbed_toplevel->surface->x = c->pointer_x - c->grab_x;
         c->grabbed_toplevel->surface->y = c->pointer_y - c->grab_y;
@@ -1208,9 +1244,11 @@ static void handle_pointer_motion(struct mc_compositor *c, struct libinput_event
         return;
     }
 
+    /* 每次移动都重新做命中测试；命中变了 seat_set_pointer_focus 会发 leave/enter */
     struct mc_surface *s = surface_at(c, c->pointer_x, c->pointer_y);
     seat_set_pointer_focus(c, s);
 
+    /* 已知简化：协议要求 surface 局部坐标，这里发的是屏幕全局坐标 */
     if (c->pointer_focus) {
         struct mc_client *mcc = find_mc_client(
             c, wl_resource_get_client(c->pointer_focus->resource));
@@ -1241,9 +1279,12 @@ static void handle_pointer_button(struct mc_compositor *c, struct libinput_event
     if (state == LIBINPUT_BUTTON_STATE_PRESSED) {
         c->button_state |= (1u << (wl_btn - BTN_MOUSE));
         struct mc_surface *s = surface_at(c, c->pointer_x, c->pointer_y);
+        /* 点击 = 抬升 + 抢键盘焦点（click-to-focus）：
+         * 桌面"点谁谁置顶、打字给谁"的全部实现就在这一行 */
         if (s) { raise_surface(c, s); mc_repaint(c); seat_set_keyboard_focus(c, s); }
     } else {
         c->button_state &= ~(1u << (wl_btn - BTN_MOUSE));
+        /* 任意按键释放都结束 grab，拖拽到此为止 */
         if (c->grab_type != GRAB_NONE) { c->grab_type = GRAB_NONE; c->grabbed_toplevel = NULL; }
     }
 

@@ -127,6 +127,8 @@ static void mc_repaint(struct mc_compositor *c);
 /* DRM setup                                                         */
 /* ------------------------------------------------------------------ */
 
+/* connector 不能随便配 CRTC: 硬件走线有限制, encoder 的 possible_crtcs
+ * 是一张位图, 第 i 位为 1 才表示可以接 res->crtcs[i]。 */
 static int find_crtc(int fd, drmModeRes *res, drmModeConnector *conn) {
     /* 优先复用 encoder 当前绑定的 CRTC */
     if (conn->encoder_id) {
@@ -160,6 +162,13 @@ static int find_crtc(int fd, drmModeRes *res, drmModeConnector *conn) {
     return -1;
 }
 
+/* 创建被 CRTC 扫描的"屏幕" framebuffer, 三步:
+ *   1. CREATE_DUMB   内核分配一块线性、CPU 可映射的显存/内存 (dumb buffer)
+ *   2. AddFB2        把这块存储包装成 DRM framebuffer (附宽/高/格式/stride)
+ *   3. MAP_DUMB+mmap 拿到用户态指针, 此后 CPU 写这里 = 屏幕可见
+ *
+ * dumb buffer 是"正被扫描的单缓冲": 没有 vsync, 写入撞上扫描位置会撕裂,
+ * 换来的是最简显示通路。生产合成器用 GBM + page flip 替代 (见 README)。 */
 static int create_screen_fb(struct mc_compositor *c) {
     struct drm_mode_create_dumb create = {0};
     struct drm_mode_map_dumb map = {0};
@@ -245,7 +254,10 @@ static int init_drm(struct mc_compositor *c) {
     printf("使用 DRM 设备: %s%s\n", card_path,
            getenv("DRM_CARD") ? " (来自 $DRM_CARD)" : " (自动扫描)");
 
-    /* 成为 DRM master 以便修改显示模式 */
+    /* 成为 DRM master: 模式设置类 ioctl 是特权操作, 且一个 DRM 设备同一
+     * 时刻只能有一个 master —— 这就是必须先 stop gdm (放倒 gnome-shell)
+     * 再从 TTY 跑本程序的原因。root 直接 drmSetMaster 即可; 普通用户
+     * 需要 logind 授权 (gnome-shell 就是这么做的)。 */
     if (drmSetMaster(c->drm_fd) == 0) {
         c->drm_master = true;
     } else {
@@ -384,6 +396,8 @@ static void paint_surface(struct mc_compositor *c, struct mc_surface *s) {
     bh = wl_shm_buffer_get_height(shm);
     bstride = wl_shm_buffer_get_stride(shm);
 
+    /* begin/end_access 维护共享池 mmap 的引用计数: 防止我们正读像素时,
+     * 客户端销毁 wl_shm_pool 导致底层映射被回收 */
     wl_shm_buffer_begin_access(shm);
     src = wl_shm_buffer_get_data(shm);
     if (!src) {
@@ -490,6 +504,8 @@ static void surface_attach(struct wl_client *client,
     (void)x;
     (void)y;
     struct mc_surface *s = wl_resource_get_user_data(resource);
+    /* Wayland 的原子更新模型: attach 只把 buffer 记到 pending,
+     * commit 时才一次性生效 (客户端可在 commit 前多次 attach 覆盖) */
     s->pending_buffer = buffer;
     watch_buffer(&s->pending_watch, s, buffer);
 }
@@ -541,19 +557,23 @@ static void surface_commit(struct wl_client *client,
     struct mc_surface *s = wl_resource_get_user_data(resource);
     struct mc_compositor *c = s->compositor;
 
-    /* 释放上一帧的 buffer，让客户端可以复用。
+    /* release 语义: 客户端 commit 后就交出了 buffer 的写权, 直到我们发
+     * wl_buffer.release 它才能复用这块存储。漏掉这步, 客户端的双缓冲池
+     * 会立刻"饿死", 应用表现为卡死在第一帧。
      * 客户端可能已销毁它 — watch 机制保证 s->buffer 要么有效要么为 NULL */
     if (s->buffer && s->buffer != s->pending_buffer)
         wl_buffer_send_release(s->buffer);
 
-    /* pending -> current (监听随之换防到 current) */
+    /* pending -> current: commit 是唯一的状态提升点 (监听随之换防到 current) */
     s->buffer = s->pending_buffer;
     watch_buffer(&s->current_watch, s, s->buffer);
     watch_buffer(&s->pending_watch, s, NULL);
 
     mc_repaint(c);
 
-    /* 触发 frame callback，通知客户端可以画下一帧 */
+    /* frame callback 是一次性的 (协议规定 done 后即销毁, 客户端每帧
+     * 重新请求)。简化: commit 后立即触发。真实合成器应等这帧真正上屏
+     * (page flip 完成) 再触发, 否则客户端帧率不会与屏幕刷新对齐。 */
     if (s->frame_callback) {
         wl_callback_send_done(s->frame_callback,
                               (uint32_t)(wl_display_get_serial(c->display)));
@@ -817,6 +837,8 @@ static int on_input_data(int fd, uint32_t mask, void *data) {
     struct mc_compositor *c = data;
     struct libinput_event *ev;
 
+    /* fd 可读 != 事件就绪: 必须先 dispatch 让 libinput 把原始 evdev
+     * 数据解析进事件队列, 之后 get_event 才取得到东西 */
     if (libinput_dispatch(c->libinput) != 0) {
         perror("libinput_dispatch");
         return 0;
@@ -946,6 +968,8 @@ int main(void) {
     wl_display_add_client_created_listener(compositor.display,
                                            &compositor.client_created);
 
+    /* 自动挑一个没被占用的名字 (wayland-1, wayland-2, ...), socket 创建在
+     * $XDG_RUNTIME_DIR 下; 返回值就是客户端要设置的 WAYLAND_DISPLAY */
     socket = wl_display_add_socket_auto(compositor.display);
     if (!socket) {
         fprintf(stderr, "wl_display_add_socket_auto 失败\n");
@@ -981,7 +1005,9 @@ int main(void) {
         return 1;
     }
 
-    /* 5. 把 libinput 的 fd 加入事件循环 */
+    /* 5. 把 libinput 的 fd 加入事件循环: 单线程事件循环是合成器的标准
+     * 形态 —— socket 上客户端的请求和 fd 上的输入事件都在 wl_display_run
+     * 的同一轮询里分发, 因此各处理函数之间不需要锁。 */
     if (compositor.libinput) {
         compositor.input_source = wl_event_loop_add_fd(
             compositor.loop, libinput_get_fd(compositor.libinput),
