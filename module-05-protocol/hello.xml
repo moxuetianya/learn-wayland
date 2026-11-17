@@ -5,6 +5,9 @@
     Learn Wayland - 自定义协议示例
   </copyright>
 
+  <!-- 一个 interface = 一类对象。request 是客户端可发的"方法调用"（client→server），
+       event 是服务端可发的"通知"（server→client）；request/event 各自的声明顺序
+       就是 wire 上的 opcode，协议发布后只能向尾部追加，不能改序或删除。 -->
   <interface name="hello" version="1">
     <description summary="一个简单的自定义协议接口">
       演示 Wayland 协议如何定义 request/event/enum，
@@ -40,6 +43,9 @@
       <arg name="server_name" type="string" summary="服务器名称"/>
     </event>
 
+    <!-- enum 在 wire 上按 uint 编码，scanner 会生成 HELLO_REPLY_LEVEL_NORMAL 等
+         常量。v1 故意没有 arg 引用它——见模块练习：给它接上一个带 enum="reply_level"
+         的参数，观察生成的常量与防御性 *_SINCE_VERSION 宏。 -->
     <enum name="reply_level">
       <description summary="回复类型枚举"/>
       <entry name="normal" value="0" summary="普通回复"/>

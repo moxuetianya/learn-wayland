@@ -1,123 +1,231 @@
-# 模块 9 — DRM/KMS 后端：直接控制屏幕
+# 模块 9：DRM/KMS——绕过一切抽象，直接点亮屏幕
 
-> **全景图定位**: [docs/01 §5](../docs/01-gpu-and-display.md#5-显示输出通路像素如何离开显卡) — 绕过一切中间层，亲手指挥显卡的显示引擎。
-> **前置**: 建议先读 [docs/01 显卡的作用](../docs/01-gpu-and-display.md) · **产出**: 在纯 TTY 下把测试图案直接写到屏幕
+> 服务端三部曲之二。模块 8 解决了"协议怎么说"，本模块解决"像素怎么上屏"：
+> 不经 X11、不经 Wayland、不经任何合成器，直接对 `/dev/dri/card0` 下 ioctl，
+> 五分钟内在屏幕上画出一块渐变色。模块 11 合成器的整条输出通路（找
+> connector、选模式、dumb buffer、`drmModeSetCrtc`）就是本模块的代码。
 
-## 目标
+## 0. 你将学到什么
 
-- 打开 DRM 设备（自动扫描 `card[0-9]*`，或 `DRM_CARD=/dev/dri/cardX` 指定）并成为 **DRM master**
-- 用 `drmModeGetResources` 探索显卡拓扑: **Connector → Encoder → CRTC**
-- 创建 dumb buffer、编程 CRTC 扫描它（`drmModeSetCrtc`）
+- DRM 子系统在内核里的位置，`/dev/dri/card0` 与 `/dev/dri/renderD128`
+  两类设备节点的区别（card node vs render node）
+- KMS 把"点亮一台显示器"抽象成 **framebuffer → CRTC → encoder → connector**
+  对象管线的原因与约束（`possible_crtcs` 位图）
+- `drmModeGetResources` 一族的枚举模型：资源先拿 ID 数组、再逐个取详情
+- dumb buffer 三部曲：`CREATE_DUMB` → `AddFB2` → `MAP_DUMB + mmap`，
+    以及为什么 CPU 往 mmap 区域写一个像素，屏幕立刻就能看到
+- **DRM master 排他性**：为什么本模块必须在纯 TTY、停掉图形会话后运行
 
-## 原理讲解
+## 1. 背景原理
 
-### 本模块在整门课的位置
+### 1.1 DRM 是什么：内核里的显卡总管
 
-模块 1-8 都活在「协议世界」；本模块直接掉到[内核层](../docs/00-big-picture.md#2-总分层图)——**这是 compositor 权力的硬件来源**。没有 KMS 的知识，「compositor 控制屏幕」就只是咒语。
+DRM（Direct Rendering Manager）是内核的显卡子系统，用户态一切图形栈的
+最底层：OpenGL/Vulkan 驱动靠它提交 GPU 命令，合成器靠它做模式设置
+（Mode Setting，即 KMS）。它通过字符设备暴露接口：
 
-### 显卡拓扑：三个要找的部件
+| 设备节点 | 权限 | 用途 |
+|----------|------|------|
+| `/dev/dri/card0`（card node） | root 或 master 授权 | **全功能**：模式设置、页翻转、vblank 等"影响显示输出"的特权操作 |
+| `/dev/dri/renderD128`（render node） | 普通用户可用 | 只能渲染（GPU 计算/纹理），**不能**碰显示输出 |
 
-（详细原理见 [docs/01 §5](../docs/01-gpu-and-display.md#5-显示输出通路像素如何离开显卡)，此处是操作视角）
+这个拆分（render node 由此得名）让无特权的 GPU 计算（如 OpenCL）不必
+授予"能改你屏幕"的权力。本模块要点亮屏幕，必须走 card node。
 
-```
-你的任务: 为「已连接的显示器」找到「能驱动它的扫描引擎」，并把 buffer 挂上去
+### 1.2 KMS 对象管线：点亮一台显示器需要四个对象
 
-drmModeGetResources(fd)
- └─▶ connectors[]        遍历: connection == DRM_MODE_CONNECTED 且有 modes
-       └─▶ modes[]       选分辨率: 优先 DRM_MODE_TYPE_PREFERRED
-       └─▶ encoders[]    查 possible_crtcs 位掩码
-             └─▶ crtcs[] 找一个可用的 CRTC ──▶ drmModeSetCrtc(挂 buffer)
-```
-
-代码里的 `find_crtc()`（[L27-58](main.c#L27-L58)）完整实现这条查找链：先偷懒复用 connector 当前绑定的 encoder→CRTC，不行再遍历 possible_crtcs。
-
-### DRM master：内核里的互斥锁
-
-`drmSetMaster()` 申请**唯一的显示控制权**（[docs/01 §6](../docs/01-gpu-and-display.md#6-gpu-怎么被指挥mesaegl/openglvulkan)）：
-
-- 同时只能有一个 master——已有桌面会话时你会失败（EACCES/EBUSY），这正是模块 9 必须停掉 gdm、在纯 TTY 跑的原因；
-- 生产级 compositor 通过 logind 拿这个权限（[docs/04 §3.3](../docs/04-login-and-session.md#33-设备访问控制为什么你的-compositor-要-sudo)），课程用 sudo 直通。
-
-### dumb buffer：教学版 framebuffer
+内核把显示硬件抽象成一条流水线，任何"上屏"都是把这条管线接通：
 
 ```
-DRM_IOCTL_MODE_CREATE_DUMB  ──▶ 内核分配一块线性内存, 返回 handle
-drmModeAddFB2               ──▶ 包装成 framebuffer 对象 (fb_id), 绑定格式/尺寸
-DRM_IOCTL_MODE_MAP_DUMB     ──▶ 拿到 mmap 偏移
-mmap                        ──▶ CPU 可写
-drmModeSetCrtc              ──▶ 命令 CRTC: "从现在起扫描这块内存"
+ ┌──────────────┐   ┌──────────────┐   ┌──────────────┐   ┌──────────────┐
+ │ framebuffer  │──→│     CRTC     │──→│   encoder    │──→│  connector   │──→ 显示器
+ ├──────────────┤   ├──────────────┤   ├──────────────┤   ├──────────────┤
+ │ 像素从哪读    │   │ 何时/如何     │   │ 转成什么接口  │   │ 物理端口      │
+ │ (一块显存)    │   │ 逐行扫描      │   │ 信号(TMDS/   │   │ (HDMI/DP/    │
+ │              │   │ (模式时钟)    │   │ LVDS/…)      │   │ eDP/…)       │
+ └──────────────┘   └──────────────┘   └──────────────┘   └──────────────┘
+   数量任意，可复用   通常 1~6 个         每个端口若干个      与物理插口对应
 ```
 
-写入 mmap 内存的每个字节，下一个扫描周期直接上屏（无撕裂保障，教学可接受；生产用 page flip——见 [docs/01 §5.2](../docs/01-gpu-and-display.md#52-vblank-与-page-flip为什么会有撕裂)）。
+- **framebuffer (FB)**：一块"按什么格式、多宽的 pitch"供扫描的像素存储。
+  本模块用最朴素的 *dumb buffer*（见 1.4）；真实合成器用 GBM/EGL 分配的
+  GPU buffer，但对 KMS 来说都只是一个 fb_id。
+- **CRTC**（CRT controller，显像管时代的名字）：真正干活的扫描引擎，按
+  模式时钟逐行读 FB、产生时序。一台显示器 60Hz 就是 CRTC 每秒把 FB 完整
+  读 60 遍——这也是"CPU 写入即可见"的物理原因。
+- **encoder**：把 CRTC 的数字输出翻译成具体接口的信号格式。一个 connector
+  可能对应多个可选 encoder（HDMI 端口既能走 TMDS 也能走 DP-alt-mode）。
+- **connector**：物理端口，携带热插拔状态和显示器 EDID 解析出的模式列表。
 
-### 退出时的礼仪：恢复 CRTC
+**约束：不是任意 CRTC 都能接任意 connector。** SoC 内部的显示路由是有限
+的多路复用，内核把它表达成每个 encoder 的 `possible_crtcs` 位图（第 i 位
+对应 `resources->crtcs[i]`）。代码里 `find_crtc()` 两步走：先复用 connector
+当前 encoder 已绑定的 CRTC（BIOS/console 已验证过的最保守路由），不行再
+按位图挑合法组合。
 
-`drmModeGetCrtc` 保存现场 → 退出时 `drmModeSetCrtc` 还原（[L233-234](main.c#L233-L234) / [L259-266](main.c#L259-L266)）。不做的话退出后 TTY 控制台可能黑屏/花屏——**写 KMS 程序的第一美德是还原现场**。
+### 1.3 枚举模型：先拿 ID，再取详情
 
-## 代码走读
+KMS 的 API 是两层结构：`drmModeGetResources()` 只返回四组**对象 ID 数组**
+（CRTCs/connectors/encoders/fbs），要看某个对象的详情需再按 ID 调
+`drmModeGetConnector()` 等，用完 `drmModeFree*` 归还。connector 详情里
+最有两个字段：`connection`（`DRM_MODE_CONNECTED` = 插着线且读到 EDID）与
+`modes[]`（显示器自己声明的模式表，`DRM_MODE_TYPE_PREFERRED` 标注推荐项，
+通常是原生分辨率）。这种"句柄式"设计避免了巨型结构体，也是一切 KMS
+工具（`drm_info`、`modetest`）的输出来源。
 
-| 位置 | 内容 |
-|------|------|
-| [L27-58](main.c#L27-L58) | `find_crtc`: encoder→CRTC 查找链（含 possible_crtcs 位掩码的用法） |
-| [L60-71](main.c#L60-L71) | `fill_buffer`: 测试图案（红渐变×、绿渐变Y——注意按 pitch 取行） |
-| [L73-131](main.c#L73-L131) | `create_dumb_fb`: 四个 ioctl 的完整生命周期（创建→AddFB→map→mmap） |
-| [L162-179](main.c#L162-L179) | 打开 card0 + drmSetMaster（含失败提示） |
-| [L191-205](main.c#L191-L205) | connector 遍历与选择 |
-| [L247-250](main.c#L247-L250) | `drmModeSetCrtc`: 一锤定音——屏幕从此扫描你的 buffer |
-| [L257-266](main.c#L257-L266) | 清理路径：恢复 CRTC → 销毁 fb/buffer → 交还 master |
+### 1.4 dumb buffer 三部曲
 
-## 动手实验
+"dumb" 指不需要任何 GPU 知识：内核替你选一块**线性的、CPU 缓存一致的**
+、可用于扫描的内存。三步缺一不可：
+
+```
+ ① DRM_IOCTL_MODE_CREATE_Dumb         ② drmModeAddFB2               ③ MAP_DUMB + mmap
+ ┌───────────────┐                ┌────────────────┐            ┌──────────────────┐
+ │ "给我 w×h×32" │                │ handle+pitch+  │            │ "给我这块的偏移"  │
+ │ 内核分配内存   │──handle/pitch/─▶│ fourcc 格式    │─fb_id      │ 拿到伪 offset，   │
+ │               │   size         │ 包装成 KMS 对象 │            │ mmap 到用户空间   │
+ └───────────────┘                └────────────────┘            └──────────────────┘
+```
+
+为什么后两步必须存在：GEM buffer 不是文件，不能直接 `open`+`mmap`——
+`MAP_DUMB` 返回的 offset 只在**对 DRM fd 本身做 mmap** 时有意义；而裸内存
+也不能上屏——只有 fb_id 才能喂给 CRTC，AddFB2 同时登记了像素格式
+（`DRM_FORMAT_XRGB8888`）和每行 pitch，驱动才知道怎么扫。pitch 由内核定，
+可能大于 `width*4`（行对齐），所以填充像素必须按 stride 走行——`fill_buffer()`
+里那个看起来多余的 `stride` 参数是 KMS 编程的第一课。
+
+### 1.5 DRM master：为什么必须 TTY + 停图形会话
+
+模式设置会**改变所有人看到的屏幕**，所以内核把它设为特权操作：对 card
+node 调用 `drmSetMaster()` 成为 master 后才允许 `drmModeSetCrtc` 等，而
+**同一时刻一个 DRM 设备只能有一个 master**。GNOME 会话在跑时，gnome-shell
+就是现任 master；此时本模块的 `drmSetMaster()` 会失败（代码打了警告继续跑，
+后面的 SetCrtc 才真正被拒）。所以运行前要 `sudo systemctl stop gdm`，放倒
+`gdm → gnome-session → gnome-shell` 整条链、释放 master 和图形 VT——这与
+模块 11 完全相同。root 直接 `drmSetMaster` 是学习项目的偷懒；正规姿势是
+普通用户经 logind 的 `TakeDevice` 授权成为 master（gnome-shell、wlroots
+都这么干）。退出时 `drmDropMaster` 归还身份。
+
+## 2. 代码走读
+
+单文件 `main.c`，按 `main()` 执行顺序：
+
+1. **打开设备 + 抢 master**：`open("/dev/dri/card0")` 后 `drmSetMaster()`。
+   注意失败只警告不退出——枚举类 ioctl 不需要 master，能让程序先打印
+   出资源情况再死在 SetCrtc，方便排查。
+2. **枚举**：`drmModeGetResources()` → 遍历 connector，找第一个
+   `DRM_MODE_CONNECTED && count_modes > 0` 的（有热插拔信号但没有 EDID
+   模式的端口是编不了任何东西的）。
+3. **选模式**：优先 `DRM_MODE_TYPE_PREFERRED`（显示器 EDID 标注的原生
+   推荐），否则退而求第一个。
+4. **`find_crtc()`**：见 1.2——先复用现成绑定，再查 `possible_crtcs`。
+5. **保存现场**：`drmModeGetCrtc()` 存下当前 CRTC 配置。退出时恢复它，
+   TTY 文字控制台才不会黑屏/花屏——这是对系统最基本的礼貌。
+6. **`create_dumb_fb()`**：1.4 的三部曲，失败路径逐步回滚（RmFB →
+   DESTROY_DUMB）。
+7. **`fill_buffer()` + `drmModeSetCrtc()`**：填充渐变图案，一条 ioctl 把
+   "这个 CRTC、从这个 FB 读、用这个模式、扫到这个 connector"一次接通：
+
+```c
+if (drmModeSetCrtc(fd, crtc_id, fb.fb_id, 0, 0, &conn_id, 1, mode) < 0) {
+```
+
+此后屏幕扫描的就是我们的 dumb buffer——`fill_buffer` 写入的每个像素最迟
+在下一遍扫描（≤1/60 秒）出现在屏幕上。注意这里**没有 vsync 同步**：写入
+撞上扫描位置会撕裂。生产合成器用双缓冲 + `drmModePageFlip` 在 vblank 时刻
+换帧（见第 5 节）。
+
+## 3. 编译与运行
+
+前置：真实机器或 VM 的**纯 TTY**，图形会话已停（原因见 1.5）。依赖
+`libdrm-dev`（`sudo apt install libdrm-dev`）。
 
 ```bash
-# Ctrl+Alt+F3 进 tty3 登录
-sudo systemctl stop gdm        # 停图形会话 (Ubuntu; KDE 用 sddm)
+# 1. 切到 tty3（物理机/VM 通常 Ctrl+Alt+F3），登录后停掉图形会话
+sudo systemctl stop gdm        # 或 sddm / lightdm，取决于发行版
+
+# 2. 编译并运行
 cd module-09-drm
-make && sudo ./drm-demo
+make
+sudo ./drm-demo
 ```
 
-### 预期输出
+成功时的输出大致如下（**数值因机器而异**，这是在一台 1080p 机器上的示例）：
 
 ```
-资源: CRTCs=3, connectors=5, encoders=5, fbs=0
-已连接的 connector id=85，模式数=24
-选中的模式: 1920x1080 1920x1080 @ 60Hz
-选中的 CRTC id=72
-dumb buffer: fb_id=88 handle=3 pitch=7680 size=8294400
+=== 模块 9: DRM/KMS 直接屏幕控制 ===
+从 TTY 运行: Ctrl+Alt+F3 登录后执行 sudo ./drm-demo
+
+资源: CRTCs=3, connectors=5, encoders=6, fbs=0
+已连接的 connector id=61，模式数=27
+选中的模式: "1920x1080" 1920x1080 @ 60Hz
+选中的 CRTC id=76
+dumb buffer: fb_id=68 handle=3 pitch=7680 size=8294400
 已显示测试图案，5 秒后恢复...
 ```
 
-（屏幕出现 5 秒红绿渐变图案，然后恢复文本控制台。）
+同时屏幕显示出"红渐变横向 × 绿渐变纵向"的测试图案，5 秒后程序恢复 CRTC
+并退出，回到 TTY 文字界面。看完把图形会话拉回来：
 
-### 观察点
+```bash
+sudo systemctl start gdm
+```
 
-1. **看拓扑**：对比 `drm-info` 输出与你程序打印的 connector/CRTC 数量；找到你显示器接的那个 connector 名（HDMI-A-1/DP-1/eDP-1）；
-2. **master 抢占实验**：回到图形会话（`sudo systemctl start gdm`）后再跑 `./drm-demo`（不 sudo）——观察 `drmSetMaster` 失败的报错信息，体会互斥；
-3. **改模式**：把 preferred 换成 `conn->modes[1]`（通常是次高分辨率）——屏幕以新分辨率显示图案（真实切换显示模式）；
-4. **画点东西**：改 `fill_buffer` 画一个十字准线/棋盘格，验证你对 pitch/像素格式的掌握（stride ≠ width×4 时按 `ptr + y*pitch` 取行）；
-5. **`/sys` 对照**：`cat /sys/class/drm/card0-*/status`（connected/disconnected）与程序遍历结果一致；
-6. **VM 虚拟显卡**：`dmesg | grep -iE 'virtio_gpu|vmwgfx'`——在 QEMU/VMware 里同样跑通，KMS 抽象屏蔽了虚拟/物理差异。
+旁路验证（不开图形界面也能玩 KMS 枚举）：装上 `libdrm-tests` 后
+`sudo modetest -c` 可以打印与本程序对应的 connector/CRTC 全表，用来对照
+自己程序的枚举结果。
 
-## 进阶练习
+## 4. 常见坑
 
-1. **page flip**：创建两块 dumb buffer，`drmModePageFlip(..., DRM_MODE_PAGE_FLIP_EVENT, ...)` + `drmHandleEvent` 轮换显示，画平滑动画——补上「无撕裂」的最后一块拼图；
-2. **多显示器**：找第二个 connected connector，用另一个 CRTC 同时输出不同图案（注意 possible_crtcs 约束）；
-3. **atomic API**：用 `drmModeAtomicCommit` 一次提交 connector+CRTC+plane 的完整状态（现代接口，weston/wlroots 全用它）；
-4. **restore 兜底**：注册 `atexit` + 信号 handler，确保 Ctrl+C 也能恢复 CRTC。
+| 现象 | 原因 | 解法 |
+|------|------|------|
+| `drmSetMaster` 警告 + `drmModeSetCrtc: Permission denied` | 图形会话仍是 DRM master | 确认 `sudo systemctl stop gdm`；`pgrep -a gnome-shell` 应为空 |
+| `open /dev/dri/card0: Permission denied` | 非 root 且不在 video 组 | `sudo` 运行（学习项目）；render node 无此问题但也做不了模式设置 |
+| `找不到已连接且带有效模式的 connector` | VM 显卡未暴露模式/显示器未直通 | 检查 VM 显示设置（QEMU 建议 virtio-gpu）；`modetest -c` 对照 |
+| 图案整体斜着拖出"平行四边形" | 填像素时按 `width*4` 而不是 pitch 走行 | 一律用返回的 `pitch/stride`（见 `fill_buffer`） |
+| 颜色不对（红蓝互换之类） | fourcc 格式与填充顺序不匹配 | `DRM_FORMAT_XRGB8888` 低字节是 X、随后 R；对照 fourcc 定义 |
+| 退出后 TTY 黑屏/花屏 | 没恢复 CRTC 就销毁了 FB | 本模块已 `drmModeGetCrtc` 保存并恢复；玩脱了就切 VT 或 `start gdm` |
+| 在 SSH 里跑，一切成功但"屏幕没反应" | 你看的物理屏与程序驱动的 connector 不是同一个 | 用 `modetest` 核对 connector 编号，多屏机器上选对目标 |
 
-## 常见坑
+## 5. 与真实实现的差距 / 深入话题
 
-| 现象 | 原因 |
-|------|------|
-| 找不到任何 card 设备 | 无显卡/容器；或设备不是 card0——程序会自动扫描 `card[0-9]*`，也可 `DRM_CARD=/dev/dri/card1` 显式指定（virtio-gpu 常注册为 card1） |
-| drmSetMaster 失败 | 图形会话还在跑——必须 stop DM 后从纯 TTY 运行；注意即使 `sudo` 也抢不走别人的 master（互斥与 UID 无关） |
-| 打不开 card 设备 | 权限：非 root 需要 video 组 + 活跃会话 ACL（课程直接 sudo） |
-| 找不到 connector | 服务器无显示器（headless）→ VM 加显卡设备；或用 `modeset=0`? 不，检查 `drm-info` |
-| SetCrtc 返回 -22 (EINVAL) | CRTC 与 connector 不兼容（possible_crtcs 没对上）、模式不被支持 |
-| 退出后黑屏 | 没恢复 saved_crtc（代码已处理，别删那段） |
+本模块画的是**被 CRTC 正在扫描的单缓冲**：简单、立即可见，但没有 vsync
+同步（撕裂），也把"渲染"和"扫描"绑死在同一块内存上。生产合成器
+（mutter / wlroots / Weston）的输出栈是：GBM 从显存分配双/三缓冲，GPU
+合成完一帧后 `drmModePageFlip` 提交换帧请求，内核**等到下一个 vblank** 才
+原子地把 CRTC 的 FB 指针换成新帧，并通过事件通知合成器"旧帧已不再扫描、
+可以复用"——这正是 Wayland frame callback 与 `wl_buffer.release` 语义的
+硬件落点（模块 6 客户端视角学过的机制，在服务端就这么实现）。
 
-## 延伸阅读
+更现代的路线是 **atomic API**（`drmModeAtomicCommit`）：把 FB、模式、平面
+位置、缩放等几十项属性打包成一个"要么全成功要么全不生效"的事务提交，
+还能先 `DRM_MODE_ATOMIC_TEST_ONLY` 干跑验证。此外真实硬件还有 overlay
+plane / sprite（让视频帧不进合成队列直接叠上屏幕）、多 CRTC 多显示器
+独立模式、fence 与显存同步等话题。本模块的 legacy `drmModeSetCrtc` 路线
+没有消失——模块 11 就原样复用它，先跑通再谈优雅。
 
-- [DRM/KMS 内核文档](https://docs.kernel.org/driver-api/drm.html)
-- [modesetting helper: modetest](https://gitlab.freedesktop.org/mesa/drm/-/blob/main/tests/modetest/modetest.c) — libdrm 自带瑞士军刀（`sudo modetest -M virtio_gpu -c`）
+## 6. 练习
 
-下一模块: [模块 10 — libinput 集成](../module-10-libinput/)
+1. **验证"扫描输出"**：把 `fill_buffer` 的蓝色分量从 128 改成按 `(x+y)`
+   变化，重编译运行——确认每处颜色变化都来自你写的那个像素循环。
+2. **模式清单**：把 connector 的 `modes[]` 全部打印（名称、分辨率、刷新率、
+   是否 PREFERRED），再故意选一个非 PREFERRED 的模式（如 1280x720）跑
+   `drmModeSetCrtc`，观察显示器重新同步。
+3. **stride 实验室**：故意把 `fill_buffer` 里的 `stride` 换成 `w * 4` 编译
+   运行（如果你的机器 pitch == w*4 就借 `modetest` 找台不对齐的机器），
+   亲眼看看"斜掉的图"，理解行对齐。
+4. **多屏**：如果机器有两个以上 connected connector，把第二个也点亮并
+   显示不同图案（各配一个 CRTC）——这就是多显示器合成器的雏形。
+5. **观察 master 排他**：不停 gdm，先在图形会话里 `sudo ./drm-demo`，
+   阅读警告内容并确认它死在哪一步；再对照 1.5 解释为什么。
+
+## 7. 延伸阅读
+
+- [DRM/KMS 内核文档（Mode Setting 章节）](https://drm.pages.freedesktop.org/drm-docs/drm/) —
+  dumb buffer、KMS 对象、master 语义的权威出处
+- [libdrm 仓库](https://gitlab.freedesktop.org/mesa/drm) — 本模块用的
+  `xf86drm.h` / `xf86drmMode.h` 与 `modetest` 示例工具
+- [kmscube](https://gitlab.freedesktop.org/mesa/kmscube) — 在本模块基础上
+  加 GBM/EGL 用 GPU 渲染上屏的下一步示例
+- [tinywl](https://gitlab.freedesktop.org/wlroots/wlroots/-/tree/master/tinywl) —
+  模块 11/12 的"工业版近亲"，输出通路与本模块几乎一致但带 page flip

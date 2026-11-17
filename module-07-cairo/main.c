@@ -29,6 +29,8 @@ struct client_state {
 static void draw_rounded_rect(cairo_t *cr,
                               double x, double y, double w, double h, double r)
 {
+    /* cairo 没有"圆角矩形"原语：四段 90° 圆弧拼出四个圆角。
+     * arc 会自动 line_to 到本段弧的起点，四段因此自然连成轮廓，最后 close_path 封口。 */
     cairo_new_sub_path(cr);
     cairo_arc(cr, x + w - r, y + r, r, -M_PI / 2, 0);
     cairo_arc(cr, x + w - r, y + h - r, r, 0, M_PI / 2);
@@ -41,13 +43,23 @@ static void draw_rounded_rect(cairo_t *cr,
 
 static void render_frame(struct client_state *st, unsigned char *pixels) {
     int w = st->width, h = st->height;
+    /* stride = 每行字节数。cairo 按它落笔，稍后 wl_shm_pool_create_buffer 按它读行，
+     * 两处必须同一个值——这里同源于本函数的 w*4 与 create_buffer 里的计算，
+     * 换用 cairo_format_stride_for_width() 做对齐时也要两处共用其返回值。 */
     int stride = w * 4;
 
+    /* 零拷贝的关键：create_for_data 不分配内存，而是把 cairo 的画布直接指向
+     * wl_shm buffer 的 mmap 区域——cairo 写的每个字节，合成器进程立刻可见。
+     * CAIRO_FORMAT_ARGB32 与 WL_SHM_FORMAT_ARGB8888 同为预乘 alpha 的 [B,G,R,A]，
+     * 字节级兼容，无需任何转换。 */
     cairo_surface_t *csurf = cairo_image_surface_create_for_data(
         pixels, CAIRO_FORMAT_ARGB32, w, h, stride);
+    /* context 是"画笔"：一个记住颜色/线宽/字体/变换的状态机，所有绘制都发给它。 */
     cairo_t *cr = cairo_create(csurf);
 
     /* gradient background */
+    /* pattern 是"画刷"（纯色只是最简单的 pattern）：线性渐变两端点之间插值 color stop。
+     * pattern 引用计数，create → set_source → 用完必须 destroy，否则整帧泄漏一个。 */
     cairo_pattern_t *pat = cairo_pattern_create_linear(0, 0, w, h);
     cairo_pattern_add_color_stop_rgb(pat, 0, 0.1, 0.2, 0.4);
     cairo_pattern_add_color_stop_rgb(pat, 1, 0.2, 0.05, 0.15);
@@ -57,6 +69,8 @@ static void render_frame(struct client_state *st, unsigned char *pixels) {
     cairo_pattern_destroy(pat);
 
     /* title text */
+    /* cairo 自称这是 toy 文字 API：只做简单从左到右排版，不做 shaping/双向文。
+     * "Sans" 经 fontconfig 解析为系统实际字体；真实文字栈是 Pango+HarfBuzz+cairo。 */
     cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL,
                            CAIRO_FONT_WEIGHT_BOLD);
     cairo_set_font_size(cr, 36);
@@ -85,6 +99,9 @@ static void render_frame(struct client_state *st, unsigned char *pixels) {
     cairo_fill(cr);
 
     /* bezier curve */
+    /* curve_to = 三次贝塞尔：当前点 → (控制点1, 控制点2) → 终点。
+     * path 模型来自 PDF/PostScript：铺路径(move/line/arc/curve)不落墨，
+     * cairo_fill/cairo_stroke 才把路径变成像素。 */
     cairo_set_source_rgb(cr, 0.2, 1.0, 0.4);
     cairo_set_line_width(cr, 3);
     cairo_move_to(cr, 300, 300);
@@ -92,6 +109,8 @@ static void render_frame(struct client_state *st, unsigned char *pixels) {
     cairo_stroke(cr);
 
     /* pie chart sector */
+    /* move_to(圆心) + arc(起止角) + close_path = "弧 + 两条半径"围成的扇形；
+     * 三个扇形首尾角度相接拼满整圆。 */
     cairo_set_source_rgb(cr, 0.9, 0.3, 0.6);
     cairo_move_to(cr, 500, 400);
     cairo_arc(cr, 500, 400, 60, -M_PI / 4, M_PI / 3);
@@ -115,6 +134,9 @@ static void render_frame(struct client_state *st, unsigned char *pixels) {
     cairo_arc(cr, 500, 400, 12, 0, 2 * M_PI);
     cairo_fill(cr);
 
+    /* 所有权顺序是本模块的灵魂：先销毁两个 cairo 对象——确保所有像素已写完、
+     * 代码不再触碰 pixels——之后才轮到 create_buffer 里的 munmap / wl_shm 包装 /
+     * commit。surface 未销毁就 munmap 是 use-after-unmap 段错误。 */
     cairo_destroy(cr);
     cairo_surface_destroy(csurf);
 }
@@ -127,6 +149,8 @@ static struct wl_buffer *create_buffer(struct client_state *st)
     int size   = stride * st->height;
 
     char tmpfile[] = "/tmp/wayland-cairo-XXXXXX";
+    /* mkstemp + unlink：留下 fd、抹掉文件名的匿名文件惯用法——
+     * 退出即回收，绝不留垃圾文件，也只有这一个 fd 能代表这块内存。 */
     int fd = mkstemp(tmpfile);
     if (fd < 0) {
         perror("mkstemp");
@@ -140,6 +164,8 @@ static struct wl_buffer *create_buffer(struct client_state *st)
         return NULL;
     }
 
+    /* MAP_SHARED 是跨进程可见的前提：cairo 写入的页与合成器 mmap 的
+     * 是同一物理页（私有映射改的是写时复制副本，合成器将看不到任何变化）。 */
     unsigned char *pixels = mmap(NULL, size, PROT_READ | PROT_WRITE,
                                  MAP_SHARED, fd, 0);
     if (pixels == MAP_FAILED) {
@@ -148,10 +174,14 @@ static struct wl_buffer *create_buffer(struct client_state *st)
         return NULL;
     }
 
+    /* 顺序即正确性：render_frame 内部 cairo 画完并 destroy（此后不再触碰 pixels），
+     * 客户端侧的 mmap 才能撤；fd 依然有效，交给 wl_shm 后由合成器自行 mmap。 */
     render_frame(st, pixels);
     munmap(pixels, size);
 
     struct wl_shm_pool *pool = wl_shm_create_pool(st->shm, fd, size);
+    /* 格式与 stride 必须和 render_frame 开头传给 cairo 的完全一致：
+     * ARGB8888 ↔ CAIRO_FORMAT_ARGB32（预乘），stride 同为 width*4。 */
     struct wl_buffer *buf = wl_shm_pool_create_buffer(
         pool, 0, st->width, st->height, stride, WL_SHM_FORMAT_ARGB8888);
     wl_shm_pool_destroy(pool);
@@ -174,6 +204,9 @@ static void xdg_surface_configure(void *data, struct xdg_surface *surf,
     struct client_state *st = data;
     xdg_surface_ack_configure(surf, serial);
 
+    /* 静态画面不需要 frame callback（模块 6）：按需渲染的最小形态——
+     * 只在 configure 到达时（首次 + 每次 resize）画一帧，画面不变就一个字节不多画。
+     * commit 是这帧像素的"发布"点，其后合成器随时可能读，所以写入必须全部完成于此前。 */
     struct wl_buffer *buf = create_buffer(st);
     if (buf) {
         wl_surface_attach(st->surface, buf, 0, 0);

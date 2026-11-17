@@ -101,6 +101,7 @@ learn-wayland/
 - 打印所有可用的全局接口及版本
 
 > **代码**: [module-01-connection/](module-01-connection/)
+> **文档**: [README](module-01-connection/README.md) — socket 发现机制、registry 广播与版本协商
 
 #### 模块 2 — 第一个 Wayland 窗口
 
@@ -112,6 +113,7 @@ learn-wayland/
 - 理解 `attach → commit` 模型
 
 > **代码**: [module-02-hello-window/](module-02-hello-window/)
+> **文档**: [README](module-02-hello-window/README.md) — xdg-shell 窗口角色、configure 握手、wl_shm 生命周期
 
 #### 模块 3 — 手动像素缓冲区与图形绘制
 
@@ -122,6 +124,7 @@ learn-wayland/
 - 实现简单的动画帧（连续重绘）
 
 > **代码**: [module-03-pixels/](module-03-pixels/)
+> **文档**: [README](module-03-pixels/README.md) — XRGB8888 字节序、stride、逐像素算法
 
 #### 模块 4 — 键盘与鼠标输入处理
 
@@ -133,6 +136,7 @@ learn-wayland/
 - 理解 `wl_seat` 的能力广播机制
 
 > **代码**: [module-04-input/](module-04-input/)
+> **文档**: [README](module-04-input/README.md) — wl_seat 能力广播、keymap 的 fd 传递、keycode→keysym→utf8
 
 #### 模块 5 — 协议 XML 与 wayland-scanner
 
@@ -144,6 +148,7 @@ learn-wayland/
 - 实现一个简单的自定义协议通信
 
 > **代码**: [module-05-protocol/](module-05-protocol/)（与模块 8 联调）
+> **文档**: [README](module-05-protocol/README.md) — 协议 XML 语法、wire format、wayland-scanner 产物
 
 ---
 
@@ -158,6 +163,7 @@ learn-wayland/
 - 对比 busy-loop 与 frame-callback 的性能差异
 
 > **代码**: [module-06-frame-cb/](module-06-frame-cb/)
+> **文档**: [README](module-06-frame-cb/README.md) — 帧回调节流问答模型、busy-loop 对比、vsync 原理
 
 #### 模块 7 — Cairo 软件渲染集成
 
@@ -168,6 +174,7 @@ learn-wayland/
 - 创建简单的 UI 组件（按钮、文本框）
 
 > **代码**: [module-07-cairo/](module-07-cairo/)
+> **文档**: [README](module-07-cairo/README.md) — wl_shm 零拷贝对接 Cairo、预乘 alpha、资源所有权顺序
 
 ---
 
@@ -183,6 +190,7 @@ learn-wayland/
 - 实现一个纯协议的"echo server"
 
 > **代码**: [module-08-server-skeleton/](module-08-server-skeleton/)
+> **文档**: [README](module-08-server-skeleton/README.md) — 服务端四对象模型、global→bind→resource 链路
 
 #### 模块 9 — DRM/KMS 后端（直接控制屏幕）
 
@@ -194,6 +202,7 @@ learn-wayland/
 - 通过 dumb buffer 直接在屏幕上绘制
 
 > **前置阅读**: [docs/01 显卡的作用](docs/01-gpu-and-display.md) · **代码**: [module-09-drm/](module-09-drm/)
+> **文档**: [README](module-09-drm/README.md) — KMS 对象管线、dumb buffer 三部曲、DRM master 排他性
 
 #### 模块 10 — libinput 集成
 
@@ -205,6 +214,7 @@ learn-wayland/
 - 将 libinput 事件循环集成到 Wayland 事件循环中
 
 > **代码**: [module-10-libinput/](module-10-libinput/)
+> **文档**: [README](module-10-libinput/README.md) — 输入栈全景、udev seat 枚举、dispatch→get_event 模型
 
 ---
 
@@ -220,6 +230,7 @@ learn-wayland/
 - 客户端可通过 `wl_shm` 提交像素
 
 > **代码**: [module-11-tty-compositor/](module-11-tty-compositor/)（可跑模块 3 的客户端！）
+> **文档**: [README](module-11-tty-compositor/README.md) — 三通路全景、GDM 与 gnome-shell 谁是服务端、attach/commit 状态机
 
 #### 模块 12 — 功能完善的 Compositor
 
@@ -231,6 +242,7 @@ learn-wayland/
 - 简单的窗口重叠合成（画家算法）
 
 > **代码**: [module-12-full-compositor/](module-12-full-compositor/)（毕业设计，附检验清单）
+> **文档**: [README](module-12-full-compositor/README.md) — xdg-shell 全族实现、键盘焦点授予、窗口堆叠与命中测试
 
 ---
 

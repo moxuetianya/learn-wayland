@@ -1,146 +1,300 @@
-# 模块 5 — 协议 XML 与 wayland-scanner
+# 模块 5：自定义协议——XML、wayland-scanner 与 wire format
 
-> **全景图定位**: [docs/00 §3](../docs/00-big-picture.md) ③ 层——Wayland 协议本身的语法与代码生成机制。
-> **前置**: [模块 1-4](../module-01-connection/) · **产出**: 自定义 `hello` 协议 + 客户端（需配合 [模块 8](../module-08-server-skeleton/) 的服务器联调）
+> 模块 1-4 我们一直在"消费"现成的协议：wl_registry、wl_shm、xdg_shell 拿来就用。
+> 本模块反过来问：**这些协议本身从哪来？** 答案是 XML 加代码生成器。你将亲手
+> 定义一个 `hello` 协议，用 wayland-scanner 编译成 C API，并配合模块 8 的服务端
+> 跑通完整的 request/event 往返——这也是模块 8 的前置一半。
 
-## 目标
+## 0. 你将学到什么
 
-- 读懂 Wayland 协议 XML 的语法（interface/request/event/enum）
-- 掌握 **wayland-scanner** 三种产物（client-header / server-header / private-code）
-- 理解版本协商与「协议即 API」的思想
+- 协议 XML 语法：`protocol` / `interface` / `request` / `event` / `enum` / `arg` 与
+  `version`、`since`、`allow-null` 属性；request 与 event 的**方向性**
+- arg 类型系统：`int`/`uint`/`fixed`/`string`/`object_id`/`new_id`/`array`/`fd`
+  在 wire 上各占多少字节、怎么编码
+- wayland-scanner 的产物（client-header / server-header / private-code / public-code）
+  各生成什么、给谁链接；Doxygen 文档也是同一份 XML 变换出来的
+- wire format：对象 id + `size<<16 | opcode` 消息头；fd 走 SCM_RIGHTS
+- 版本协商：`wl_registry_bind` 的 version 参数的精确语义
 
-## 原理讲解
+## 1. 背景：协议即 XML，API 即生成物
 
-### Wayland 的 RPC 本质
+### 1.1 wayland.xml 是整个 Wayland 世界的"宪法"
 
-剥掉所有图形语义，Wayland 是一个**双向 RPC 协议**：
+核心协议住在 `/usr/share/wayland/wayland.xml`（扩展协议在 wayland-protocols 包，
+`/usr/share/wayland-protocols/`）。libwayland 本身**不理解任何具体协议**——它只会
+搬运"对象 id + opcode + payload"的字节壳；`wl_surface`、`wl_shm` 之所以存在，是因为
+两端各自链接了**从同一份 XML 生成的编解码表**：
 
 ```
-客户端 ── request ──▶ 服务器    (客户端能主动调用的"方法")
-客户端 ◀── event ─── 服务器    (服务器能主动推送的"通知"
+              hello.xml（唯一事实来源）
+                      │
+            wayland-scanner（代码生成器）
+      ┌────────────────┼────────────────┐
+      ▼                ▼                ▼
+ client-header    server-header    private-code
+ 客户端声明:       服务端声明:       消息签名表/wl_interface
+ ·struct hello代理 ·hello_interface  （编解码元数据，
+ ·hello_listener   （dispatch vtable） 客户端与服务
+ ·hello_say_hello() ·hello_send_*()   端都各链一份）
+   等请求桩           等事件桩
+      │                │                │
+      ▼                ▼                ▼
+  模块 5 客户端     模块 8 服务端      双方各链一份
 ```
 
-- **接口 (interface)** = 一组 request+event 的集合（类比一个类/服务）；
-- **对象 (object)** = 接口的实例，用 32 位 id 引用；
-- **方向性是相对的**：同一个接口，客户端实现 event 的处理，服务器实现 request 的处理。
+### 1.2 XML 语法逐项拆解
 
-图形功能全部建立在这个 RPC 之上：`wl_surface.commit` 是 request，`wl_keyboard.key` 是 event——你在模块 1-4 用的一切都能这样拆解。
+本模块的 `hello.xml` 只有 49 行，但要素齐全：
 
-### XML：协议的单一事实来源
+| 元素/属性 | 含义 | 本模块中的例子 |
+|-----------|------|---------------|
+| `<protocol name>` | 协议（= 一个 XML 文件）的名字，也是产物里的宏前缀 | `hello` |
+| `<interface name version>` | 一个对象类型；version 是该接口的当前版本 | `hello` v1 |
+| `<request name>` | **客户端可发**的请求（client → server） | `say_hello`、`add_numbers` |
+| `<event name>` | **服务端可发**的事件（server → client） | `hello_reply` 等 3 个 |
+| `<arg name type>` | 参数；type 见 1.3 的类型表 | `message`（string）、`a`/`b`（int） |
+| `<enum>` / `<entry>` | 常量表；entry 有 `value` 和 `summary` | `reply_level`（定义了但未接线） |
+| `<description summary>` | 文档，**就是** Doxygen/官方文档的正文 | 各处 |
+| `since="N"` / `allow-null="true"` | 条目从第 N 版才存在 / object、string 允许为空（wire 上 id=0、长度 0） | v1 未用到，见练习 3 |
 
-[hello.xml](hello.xml) 定义了一个最小但完整的接口（对照阅读）：
+方向口诀：**request 是"你能调对方的方法"，event 是"对方能推给你的通知"**。同一份
+XML 两端共用，视角镜像。一个重要的推论：**request/event 在各自列表里的声明顺序就是
+opcode**（0 起）。协议发布即冻结：只能向尾部追加（标 `since`），绝不能改顺序、改
+语义、删条目——否则新老版本消息错位，连接直接被以协议错误断开。
+
+### 1.3 arg 类型系统：每种类型在 wire 上长什么样
+
+| type | C 类型（客户端） | 线上编码 | 说明 |
+|------|----------------|---------|------|
+| `int` | `int32_t` | 4 字节 | |
+| `uint` | `uint32_t` | 4 字节 | serial、version、name 都是它 |
+| `fixed` | `wl_fixed_t` | 4 字节 | 24.8 有符号定点。坐标用它而非 float：消息体 32 位对齐，且定点跨架构逐位一致 |
+| `string` | `const char *` | u32 长度（**含 NUL**）+ 字节 + NUL | UTF-8 |
+| `object` | `struct wl_proxy *` | 4 字节对象 id | id=0 表示 null 对象 |
+| `new_id` | 生成的代理指针 | 4 字节 id | 见下方"new_id 的特例" |
+| `array` | `struct wl_array` | u32 长度 + 字节 | 长度 padding 到 4 的倍数 |
+| `fd` | `int32_t` | **0 字节** | 不在字节流里！见 1.5 |
+
+**new_id 的特例**：id 由**发送方分配**。若 new_id 声明了 interface 类型（如
+`wl_surface.frame` 的 callback），wire 上只有 4 字节 id；若没声明类型（全协议唯一
+一处：`wl_registry.bind`），要先传 interface 名 + version + id——接收方必须靠这条
+消息才知道要造什么类型的对象。
+
+### 1.4 wire format：一条消息的字节布局
+
+```
+ 偏移   0          4                8
+       ┌──────────┬───────────────┬────────────────────────┐
+       │ 对象 id   │ size<<16      │  payload（按 arg 声明  │
+       │  (u32)   │      |opcode  │  顺序，每个 arg 对齐 4） │
+       │          │  (u32)        │                        │
+       └──────────┴───────────────┴────────────────────────┘
+```
+
+- 低 16 位是 opcode，高 16 位是 **size**（含 8 字节消息头）；对象 id 约定：`1` 固定
+  是 wl_display 单例，客户端新建对象从 2 递增，服务端创建的从 `0xff000000` 起。
+
+### 1.5 fd 不走字节流：SCM_RIGHTS
+
+`fd` 类型参数（如 `wl_shm.create_pool` 的 fd）从不出现在消息正文里。Unix domain
+socket 允许在 `sendmsg()` 时附带 **ancillary data**，内核把发送方的一个打开文件描述
+直接"塞"进接收进程的 fd 表——接收方拿到一个**新的 fd 号，指向同一个打开文件**：
+
+```
+客户端进程                                服务端进程
+  msg 字节 ──────── write() ──────────→  read()
+  fd 21 ─── sendmsg(SCM_RIGHTS, 21) ──→  recvmsg() 得到 fd 33
+             （内核把同一个打开文件挂进对方 fd 表：两个 fd 号、同一份文件）
+```
+
+libwayland 在两端各维护一个 fd 队列保证顺序：消息里第 N 个 fd 参数对应队列里第 N
+个 fd。模块 3/6/7 的 `wl_shm_pool` 全靠这个机制把 buffer 交给合成器。
+
+### 1.6 版本协商
+
+- interface 的 `version="N"` 经 `wl_registry.global` 广播出去；bind 时客户端请求的
+  version 必须 `1 ≤ v ≤ 广播值`，服务端**按客户端请求的版本**对待这个 resource。
+  模块 6/7 绑 `wl_compositor` 时广播 v6、请求 v4，就是协商。
+- 带 `since="N"` 的条目：老版本绑定方绝不会发送/收到；scanner 生成的头文件还提供
+  `*_SINCE_VERSION` 常量供防御性判断。
+
+## 2. wayland-scanner 的产物各给谁用
+
+`wayland-scanner --help` 列出五种模式（1.23）：
+
+| 产物 | 生成内容 | 谁用 |
+|------|---------|------|
+| client-header | 不透明代理类型、`*_listener`、发送 request 的 static inline 桩、opcode 宏 | 客户端 include |
+| server-header | dispatch vtable（`struct hello_interface`）、发送 event 的 static inline 桩 | 服务端 include |
+| enum-header | 仅 enum 常量，无编解码表 | 需要共享常量但不链 libwayland 的场合 |
+| private-code | 消息签名表、`wl_interface` 结构（符号不导出） | **客户端与服务端各链一份** |
+| public-code | 同 private-code，但符号可见 | 仅当把协议符号打进共享库供外部链接；官方强烈建议非必要不用 |
+
+"private" 指符号私有（不污染动态符号表），不是"内部专用"——它是默认正确选择，
+本仓库所有 Makefile 都用它。另外 **Doxygen 文档不是 scanner 的模式**：wayland 源码树
+的 `doxygen.xsl` 从同一份 XML 变换出 HTML——官方协议手册网页就是这么生成的，
+`<description>` 里的每个字都会成为 API 文档。
+
+## 3. 代码走读
+
+### 3.1 hello.xml：一份完整的协议
 
 ```xml
 <interface name="hello" version="1">
-  <request name="say_hello">              ← 客户端可调
-    <arg name="message" type="string"/>
-  </request>
-  <event name="hello_reply">              ← 服务器可推
-    <arg name="reply" type="string"/>
-  </event>
-  <enum name="reply_level">               ← 枚举常量
-    <entry name="normal" value="0"/>
-  </enum>
-</interface>
+    <request name="say_hello">
+      <arg name="message" type="string"/>
+    </request>
+    <event name="sum_result">
+      <arg name="a" type="int"/> <arg name="b" type="int"/> <arg name="sum" type="int"/>
+    </event>
 ```
 
-参数类型系统（比 C 类型少得多）：
+设计动机：`say_hello` 演示 string 编解码；`add_numbers` 演示多参数往返；三个 event
+让服务端能主动推数据；`enum reply_level` 故意不接线（练习 2 接上）。
 
-| type | 对应 C | 说明 |
-|------|--------|------|
-| `int` / `uint` | int32_t / uint32_t | 标量 |
-| `fixed` | wl_fixed_t | 24.8 定点数（坐标用） |
-| `string` | const char* | UTF-8，NUL 结尾 |
-| `object` | struct wl_* * | 另一接口的实例 |
-| `new_id` | 返回值 | **请求创建新对象**（如 get_registry） |
-| `array` | struct wl_array | 长度前缀的字节数组 |
-| `fd` | int32_t | **文件描述符**，走 SCM_RIGHTS 旁路（wl_shm 靠它） |
+### 3.2 Makefile：两条生成规则
 
-版本 `version="1"` 意味着：**只能追加，不能修改已有语义**（向后兼容的铁律）。升级版本的套路：加新 request/event、给旧行为加枚举开关。
+```make
+hello-client-protocol.h: hello.xml
+	wayland-scanner client-header $< $@
+hello-protocol.c: hello.xml
+	wayland-scanner private-code $< $@
+```
 
-### wayland-scanner：三种产物
+XML 比产物新时 make 自动重新生成，**改了 XML 忘记重编**因此很难发生。生成物是否
+入库是团队约定：本模块现场生成，模块 6/7 则把 xdg-shell 生成物提交进了仓库。
+
+### 3.3 main.c：客户端全流程
+
+1. **发现**：`wl_display_get_registry` + `wl_display_roundtrip`——roundtrip 即
+   "发一个 sync 请求并等到它的 done"，保证所有 global 广播完、回调全部跑完才继续。
+2. **绑定**：回调里 `strcmp` 命中后 `wl_registry_bind(registry, name,
+   &hello_interface, 1)`——最后一参就是 1.6 的版本协商。
+3. **监听**：`hello_add_listener`。生成的 `struct hello_listener` 字段与 XML 的
+   event 一一对应，scanner 保证字段序 = event opcode 序。
+4. **发请求**：`hello_say_hello(st.hello, "Hello from client!")` 等。生成的桩只有
+   两行实质——查 private-code 里的签名表，把参数编码进**本地缓冲**：
+
+   ```c
+   wl_proxy_marshal_flags((struct wl_proxy *)hello,
+            HELLO_SAY_HELLO, NULL, wl_proxy_get_version(...), 0, message);
+   ```
+
+   此刻还没有一个字节写进 socket。
+5. **`wl_display_flush`** 才把缓冲写进 socket（忘掉它请求就滞留本地）。
+6. **收事件**：`while (!st.done && wl_display_dispatch(...))`——dispatch 阻塞等事件，
+   listener 回调在本线程执行；`sum_result` 里核对 `sum == 3+5` 后置 `done` 退出。
+
+### 3.4 对面：模块 8 的服务端
+
+模块 8 用**同一份 hello.xml** 生成的 server-header + 同一份 private-code：
+`hello_bind()` 里 `wl_resource_create` + `wl_resource_set_implementation` 挂上
+vtable，请求落进两个实现函数，再用 `hello_send_*` 桩回事件。完整时序：
+
+```
+客户端                              模块 8 服务端
+  │ bind hello(v1) ────────────────→ hello_bind()
+  │                                     └ hello_send_server_info()  ← bind 时立刻推
+  │ say_hello(...) ───────────────→ hello_say_hello() → send_hello_reply()
+  │ add_numbers(3,5) ─────────────→ hello_add_numbers() → send_sum_result()
+  │ ←── server_info / hello_reply / sum_result ── flush 后陆续到达
+  │ hello_destroy ─────────────────→ （resource 销毁回调）
+```
+
+留意真实输出里 `server_info` 是**第一个**到的事件，但它由 bind 触发：bind 在 wire
+上晚于 roundtrip 的 sync 请求，回来时 roundtrip 已结束，只能在主循环的 dispatch 里
+被听见——事件与请求在两条方向上各自保序。想看"API 糖"之下的字节流：
+`WAYLAND_DEBUG=1 WAYLAND_DISPLAY=wayland-0 ./hello-client`。
+
+## 4. 编译与运行
+
+依赖 libwayland（含 wayland-scanner，`which wayland-scanner` 可确认）：
 
 ```bash
-wayland-scanner client-header  hello.xml hello-client-protocol.h    # 客户端 API 声明
-wayland-scanner server-header  hello.xml hello-server-protocol.h    # 服务端 API 声明
-wayland-scanner private-code   hello.xml hello-protocol.c           # 消息编解码（共用）
+cd module-05-protocol
+make
 ```
 
-生成的客户端 API 形如（见 Makefile 自动生成规则）：
-
-```c
-hello_say_hello(struct hello *, const char *message);   // request → 打包发送
-hello_send_hello_reply(struct wl_resource *, ...);      // (服务端) 发 event
-// 以及 struct hello_listener { void (*hello_reply)(...); };  // 收 event 的回调表
-```
-
-**没有魔法**：scanner 只是把 XML 翻译成「按签名序列化消息」的样板代码。模块 8 你会看到这些函数如何被服务器逐个实现。
-
-### 传输格式（选读）
-
-每条消息 = 两个 32 位字（对象 id + 大小+opcode）+ 参数区；fd 不占参数区而是随 SCM_RIGHTS 附带。这就是 wl_shm 传 fd 的底层通道——协议设计者用「fd 是一等公民」换来了零拷贝 buffer 传递。
-
-## 代码走读
-
-客户端 [`main.c`](main.c)：
-
-| 位置 | 内容 |
-|------|------|
-| [L14-42](main.c#L14-L42) | 三个 event 回调（hello_reply/sum_result/server_info）——「实现 event 侧」 |
-| [L44-54](main.c#L44-L54) | registry 里识别自定义接口 `hello` 并 bind |
-| [L88-97](main.c#L88-L97) | 没找到 global 时的引导文案（正常情况——先跑模块 8 的 server） |
-| [L101-108](main.c#L101-L108) | 发两个 request → flush → dispatch 等 event：一次完整 RPC 往返 |
-
-## 动手实验
-
-本模块需要「两方」：先起服务器再跑客户端。
+**跑法 A：桌面 Wayland 会话内直接跑**（观察 registry、确认"没有 hello"）：
 
 ```bash
-# 终端 1: 模块 8 的服务器
+./hello-client
+```
+
+预期输出（global 列表因合成器而异）：
+
+```
+=== 模块 5: 自定义 Wayland 协议 ===
+本模块演示: ...（4 行自述）
+[registry] found global: wl_compositor v6 (id=1)
+...（桌面合成器广告的全部 global，每个一行）
+
+当前 compositor 不提供 'hello' 全局接口.
+这是正常的——hello 是我们自己定义的协议.
+请先运行模块 8 的 server, 它注册了这个接口: ...
+```
+
+**跑法 B：配合模块 8 服务端跑通全流程**（两个终端；server 无窗口，不需要 TTY）：
+
+```bash
+# 终端 1：启动纯协议 echo server
 cd module-08-server-skeleton && make && ./hello-server
-# 输出: 监听 socket: wayland-1
 
-# 终端 2: 模块 5 的客户端（指向上面打印的 socket）
-cd module-05-protocol && make
-WAYLAND_DISPLAY=wayland-1 ./hello-client
+# 终端 2（socket 名以 server 打印为准，从 wayland-0 起找第一个空名，被占则顺延）
+cd module-05-protocol
+WAYLAND_DISPLAY=wayland-0 ./hello-client
 ```
 
-预期输出（客户端）：
+客户端预期输出（服务端同期打印 `client says / computing 3 + 5 / resource destroyed`）：
 
 ```
 [registry] found global: hello v1 (id=1)
 [registry] bound hello interface v1
+
+--- 发送请求 ---
+--- 等待事件 ---
 [event] server_info: protocol_version=1  server=learn-wayland-module8
 [event] hello_reply: Hello back from server!
 [event] sum_result: 3 + 5 = 8
+
+=== 模块 5 完成 ===
 ```
 
-### 观察点
+## 5. 常见坑
 
-1. **裸看字节流**：`WAYLAND_DEBUG=1 WAYLAND_DISPLAY=wayland-1 ./hello-client 2>&1 | head -20`——libwayland 会打印每条收发的消息（对象id.方法名(参数)），**这是调试一切 Wayland 程序的神器**，把输出与 XML 对照逐字段理解；
-2. **改协议再联调**：给 hello.xml 加一个 `ping` request + `pong` event，重新 make（scanner 重跑），在模块 8 的 server 里实现它——体验「协议→代码→双方实现」的完整迭代闭环；
-3. **版本协商失败实验**：把客户端 bind 版本改成 2（XML 里只有 1），观察错误；
-4. **socket 即协议**：`ss -x | grep wayland-1` 看到这对连接——Wayland 的 RPC 就是一条 unix socket。
+| 现象 | 原因 | 解法 |
+|------|------|------|
+| 服务端直接断连、客户端 dispatch 返回 -1 | 两端生成物版本不一致（改了 XML 只重编一端），opcode 错位 | 两端都重新 make；生成物入库时务必提交新版 |
+| bind 后被踢，报 invalid object | 请求版本 > 广播版本 | bind 的 version 取 `min(广播值, 所需)` |
+| 服务端毫无反应，随后一次性收到 | 忘了 `wl_display_flush`，请求滞留本地缓冲 | 发完请求 flush，或进入 dispatch（会先 flush） |
+| 收 event 崩/乱；加了新 request 后两端对不上 | 手改了生成的 listener 结构体；或新 request 插在列表中间 | 永远别改生成物；新条目只能追加到尾部并标 `since` |
 
-## 进阶练习
+## 6. 与真实实现的差距 / 深入话题
 
-1. 在 XML 里加 `new_id` 返回的 request（如 `get_stats` 返回一个 stats 对象），实现双向对象创建；
-2. 加 `array` 类型参数（一次传多个数求和）；
-3. 读 [wayland.xml](https://gitlab.freedesktop.org/wayland/wayland/-/blob/main/protocol/wayland.xml) 里 `wl_surface` 的定义，找出 commit/damage/frame 的完整签名——验证你对模块 2/3/6 的理解；
-4. 用 `WAYLAND_DEBUG=1` 重跑模块 2 的窗口程序，找出 configure/ack 的完整往返。
+真实的协议演进远比"写个 XML"谨慎。核心协议与 wayland-protocols 都遵循**发布即
+冻结**的纪律：一个 interface 版本发布后，request/event 集合与语义永久固定，演进只能
+靠追加（`since` 更高的条目）或另起新 interface——所以模块 1 里你能看到 `zwp_*_v1`、
+`zwp_*_v2` 并存的 global；进 wayland-protocols 的 stable 目录前，协议要在
+staging/test 里被至少两个实现采纳验证。另一个值得细品的细节：`wl_registry.bind`
+的无类型 new_id 是历史包袱——早期设计没有类型信息，`wl_registry_bind` 至今要手传
+`wl_interface` 指针，后来的协议都带类型。
 
-## 常见坑
+## 7. 练习
 
-| 现象 | 原因 |
-|------|------|
-| 客户端提示「不提供 hello 接口」 | 服务器没先跑，或 `WAYLAND_DISPLAY` 没指向它（默认连的是桌面） |
-| 链接错误 undefined reference | private-code 没编译进二进制（Makefile 已处理，注意别手动删生成文件） |
-| event 一次没到 | request 后没 flush 就阻塞 dispatch——本代码 [L104](main.c#L104) 特意 flush 了 |
-| 修改 XML 后行为没变 | scanner 产物没重新生成（`touch hello.xml && make`） |
+1. **加一对 request/event**：给 hello 加 `shout(string)` 请求和 `echo(string)` 事件，
+   重新生成、改两端实现。体会"XML 是唯一需要先改的地方"。
+2. **接上 enum**：给 `say_hello` 加 `enum="reply_level"` 的参数，服务端按
+   normal/verbose 回不同文案，观察生成的常量名。
+3. **版本实验**：interface 升 v2、新 event 标 `since="2"`；bind v1 验证收不到，
+   再 bind v2 看服务端日志的版本号。
+4. **读字节流**：`WAYLAND_DEBUG=1` 跑跑法 B，找出 `add_numbers(3,5)` 的 opcode，
+   对照 1.4 手算它的 size。
+5. **fd 传阅**：给协议加一个 `fd` 参数并在两端打印收到的 fd 号——预习模块 3 的
+   `wl_shm_create_pool`，现在你知道那个 fd 是怎么过进程的了。
 
-## 延伸阅读
+## 8. 延伸阅读
 
-- [Wayland 协议文档: XML 规范](https://wayland.freedesktop.org/docs/html/ch05.html)
-- [wayland-scanner 手册](https://man.archlinux.org/man/wayland-scanner.1.en)
-
-下一模块: [模块 6 — 帧回调与垂直同步](../module-06-frame-cb/)
+- [Wayland 协议文档（含 wire format 完整规范）](https://wayland.freedesktop.org/docs/html/)
+- 本机 `/usr/share/wayland/wayland.xml` —— 最好的教材就是宪法本身，先读 wl_registry
+- [wayland-book: Protocol Design](https://wayland-book.com/protocol-design/index.html)
+- `man wayland-scanner`；[wayland-protocols 仓库](https://gitlab.freedesktop.org/wayland/wayland-protocols)——stable/staging/test 的分层本身就是教材

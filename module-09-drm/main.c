@@ -14,6 +14,11 @@
 #include <drm/drm_fourcc.h>
 #include <drm/drm_mode.h>
 
+/* A dumb scanout buffer and the KMS framebuffer object wrapping it.
+ * handle is the driver-side GEM handle (kernel's name for the allocation);
+ * fb_id is the KMS object a CRTC can be pointed at; map is the CPU-side
+ * mapping we get from mmap(). Keeping all three together makes teardown
+ * symmetric with creation. */
 struct dumb_fb {
     uint32_t fb_id;
     uint32_t handle;
@@ -25,7 +30,10 @@ struct dumb_fb {
 };
 
 static int find_crtc(int fd, drmModeRes *res, drmModeConnector *conn) {
-    /* Try encoder's current CRTC first */
+    /* Try the connector's current encoder and its CRTC first: reusing the
+     * binding that already lights up this connector (set by the BIOS or
+     * the kernel console) is the most conservative choice -- it's proven
+     * hardware routing, no guessing involved. */
     if (conn->encoder_id) {
         drmModeEncoder *enc = drmModeGetEncoder(fd, conn->encoder_id);
         if (enc) {
@@ -39,7 +47,10 @@ static int find_crtc(int fd, drmModeRes *res, drmModeConnector *conn) {
         }
     }
 
-    /* Fallback: walk the connector's encoders and their possible CRTCs */
+    /* Fallback: not every CRTC can drive every connector. Each encoder
+     * carries a possible_crtcs bitmask where bit i corresponds to
+     * resources->crtcs[i] -- that bitmask is the hardware routing table
+     * of the display pipeline, so we must obey it when picking a pair. */
     for (int e = 0; e < conn->count_encoders; e++) {
         drmModeEncoder *enc = drmModeGetEncoder(fd, conn->encoders[e]);
         if (!enc)
@@ -58,7 +69,14 @@ static int find_crtc(int fd, drmModeRes *res, drmModeConnector *conn) {
 }
 
 static void fill_buffer(uint8_t *ptr, int w, int h, int stride) {
-    /* Draw a test pattern: red gradient X, green gradient Y, blue constant */
+    /* Test pattern: red gradient along X, green gradient along Y, blue
+     * constant -- if colors come out wrong, that's a format bug, if the
+     * image comes out skewed/diagonal, that's a stride bug. */
+    /* XRGB8888: one pixel = 4 bytes, low byte unused (X), then R, G, B
+     * from low to high -- little-endian, so bits 16-23 are red. */
+    /* Always walk rows via stride, never width*4: hardware often aligns
+     * each row (e.g. to 64/256 bytes), so pitch can exceed width*bpp and
+     * assuming a tightly packed buffer draws a skewed image. */
     for (int y = 0; y < h; y++) {
         uint32_t *row = (uint32_t *)(ptr + y * stride);
         for (int x = 0; x < w; x++) {
@@ -81,6 +99,10 @@ static int create_dumb_fb(int fd, uint32_t width, uint32_t height,
 
     memset(out, 0, sizeof(*out));
 
+    /* Step 1/3: CREATE_DUMB asks the kernel for a *dumb* buffer: linear,
+     * contiguous and CPU-coherent memory usable for scanout on most
+     * hardware, no GPU knowledge required. The kernel picks the
+     * placement and answers with handle + pitch + size. */
     create.width = width;
     create.height = height;
     create.bpp = 32;
@@ -95,7 +117,10 @@ static int create_dumb_fb(int fd, uint32_t width, uint32_t height,
     out->width = width;
     out->height = height;
 
-    /* Create a framebuffer object referencing the dumb buffer */
+    /* Step 2/3: wrap the buffer in a KMS framebuffer object. AddFB2 takes
+     * per-plane handle/pitch/offset plus a DRM fourcc format code, so the
+     * driver knows how to interpret the bytes at scanout time. A dumb
+     * buffer alone is just memory; only an fb_id can be fed to a CRTC. */
     handles[0] = create.handle;
     pitches[0] = create.pitch;
     offsets[0] = 0;
@@ -105,7 +130,9 @@ static int create_dumb_fb(int fd, uint32_t width, uint32_t height,
         goto err_destroy;
     }
 
-    /* Prepare the buffer for memory mapping */
+    /* Step 3/3: MAP_DUMB returns a fake offset meaningful only as an
+     * mmap() offset on the DRM fd itself -- GEM buffers are not files
+     * you could open and mmap directly, the ioctl is the only door. */
     map.handle = create.handle;
     if (drmIoctl(fd, DRM_IOCTL_MODE_MAP_DUMB, &map) < 0) {
         perror("DRM_IOCTL_MODE_MAP_DUMB");
@@ -213,7 +240,10 @@ int main(void) {
            resources->count_crtcs, resources->count_connectors,
            resources->count_encoders, resources->count_fbs);
 
-    /* Find the first connected connector that has at least one mode */
+    /* Find the first connected connector that has at least one mode.
+     * count_modes > 0 matters: a hotplug-detect pin can say CONNECTED
+     * (or a dummy HPD fires) while the connector still carries no EDID
+     * modes -- such a connector cannot be programmed at all. */
     for (int i = 0; i < resources->count_connectors; i++) {
         drmModeConnector *c = drmModeGetConnector(fd, resources->connectors[i]);
         if (!c)
@@ -255,7 +285,10 @@ int main(void) {
     }
     printf("选中的 CRTC id=%d\n", crtc_id);
 
-    /* Save current CRTC state so we can restore it later */
+    /* Save current CRTC state so we can restore it later: the TTY console
+     * owns this CRTC before we steal it. Without restoring, the text
+     * console would come back scanning a framebuffer we already destroyed
+     * (black or garbage). */
     saved_crtc = drmModeGetCrtc(fd, crtc_id);
 
     /* Create and fill a dumb buffer */
@@ -268,7 +301,10 @@ int main(void) {
 
     fill_buffer(fb.map, fb.width, fb.height, fb.pitch);
 
-    /* Program the CRTC to scan out our framebuffer */
+    /* One ioctl wires the whole pipeline: this CRTC scans out that FB,
+     * at that mode, driving that connector. From here on the display is
+     * live: the CRTC re-reads our framebuffer on every refresh, so the
+     * pattern we filled earlier simply appears on screen. */
     if (drmModeSetCrtc(fd, crtc_id, fb.fb_id, 0, 0, &conn_id, 1, mode) < 0) {
         perror("drmModeSetCrtc");
         goto cleanup;
