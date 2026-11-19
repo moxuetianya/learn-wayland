@@ -265,8 +265,9 @@ configure 前不得 commit，不发它规矩的客户端会永远卡住不画。
 
 ## 4. 编译与运行
 
-前置与模块 11 相同：真实机器或 VM 的**纯 TTY**、停掉图形会话，另外需要
-`wayland-protocols` 和 `libxkbcommon` 的开发包。
+前置与模块 11 相同：真实机器或 VM 的**纯 TTY**、停掉图形会话；依赖在
+模块 11 清单（libdrm/libinput/libudev）基础上增加 `wayland-protocols`
+和 `libxkbcommon-dev`。一次装齐全部依赖可跑 `bash setup-vm.sh`。
 
 ```bash
 # 1. tty3 登录（VM 里 Ctrl+Alt+F3），停掉图形会话
@@ -302,6 +303,7 @@ wl_output、data-device-manager、linux-dmabuf 等一整串本模块没有的协
 
 | 现象 | 原因 | 解法 |
 |------|------|------|
+| `Package libdrm/libinput not found` / `fatal error: xf86drm.h` | 缺服务端开发包（报错链同模块 9） | `bash setup-vm.sh`，或按模块 11 前置补装 |
 | make 报找不到 `xdg-shell.xml` | 未装 wayland-protocols 或 pkg-config 探测不到 | 安装后确认 `pkg-config --variable=pkgdatadir wayland-protocols` 有输出 |
 | 链接报 `undefined reference to xdg_wm_base_interface` | 手动 `cc compositor.c` 漏了生成物 | 用 make，`xdg-shell-protocol.o` 必须一起链 |
 | 客户端连上后秒退 / 协议错误 | 客户端需要本模块未实现的 global（wl_output、data-device-manager…）或 EGL | 换 weston-terminal / weston-simple-shm 验证 |

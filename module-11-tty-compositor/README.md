@@ -228,7 +228,9 @@ udev 上下文 → libinput 上下文 → 绑定 seat0。之后
 
 ## 4. 编译与运行
 
-前置：真实机器或 VM 的**纯 TTY**，且已停掉图形会话。
+前置：真实机器或 VM 的**纯 TTY**，且已停掉图形会话。依赖
+`libdrm-dev`、`libinput-dev`、`libudev-dev`（wayland-server 随客户端
+阶段的 `libwayland-dev` 已就位）；一次装齐可跑 `bash setup-vm.sh`。
 
 ```bash
 # 1. 切到 tty3（VM 里通常是 Ctrl+Alt+F3），登录
@@ -273,6 +275,7 @@ sudo systemctl start gdm
 
 | 现象 | 原因 | 解法 |
 |------|------|------|
+| `Package libdrm/libinput was not found ...` + `fatal error: xf86drm.h` 等 | 缺服务端开发包，pkg-config 失败 → `CFLAGS`/`LDFLAGS` 展开为空（报错链同模块 9） | `bash setup-vm.sh`，或 `sudo apt install libdrm-dev libinput-dev libudev-dev` |
 | `drmSetMaster 失败` 警告后黑屏/无输出 | gnome-shell 仍是 DRM master | 确认 `systemctl stop gdm` 已执行；`pgrep -a gnome-shell` 应为空 |
 | `找不到已连接且带有效模式的 connector` | VM 显卡是 virtio-gpu 且未暴露模式 / 无显示器直通 | 检查 VM 显示设置；QEMU 建议用 `virtio-gpu` 并指定分辨率 |
 | 客户端能连上但"什么都没显示" | 该客户端需要 xdg-shell（本模块未实现）或非 shm buffer | 换纯 wl_surface 客户端，如 `weston-simple-shm`；xdg-shell 见模块 12 |

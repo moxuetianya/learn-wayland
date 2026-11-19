@@ -140,7 +140,8 @@ if (drmModeSetCrtc(fd, crtc_id, fb.fb_id, 0, 0, &conn_id, 1, mode) < 0) {
 ## 3. 编译与运行
 
 前置：真实机器或 VM 的**纯 TTY**，图形会话已停（原因见 1.5）。依赖
-`libdrm-dev`（`sudo apt install libdrm-dev`）。
+`libdrm-dev`（`sudo apt install libdrm-dev`；或一次跑 `bash setup-vm.sh`
+装齐全部模块依赖）。
 
 ```bash
 # 1. 切到 tty3（物理机/VM 通常 Ctrl+Alt+F3），登录后停掉图形会话
@@ -181,6 +182,7 @@ sudo systemctl start gdm
 
 | 现象 | 原因 | 解法 |
 |------|------|------|
+| `Package libdrm was not found in the pkg-config search path` + `fatal error: xf86drm.h` | 缺 `libdrm-dev`。典型报错链：pkg-config 找不到 `libdrm.pc` → Makefile 的 `$(shell pkg-config ...)` 展开为**空** → 编译器没有任何 `-I` 路径 → 头文件找不到 | `sudo apt install libdrm-dev`；一次装齐所有模块依赖用 `bash setup-vm.sh` |
 | `drmSetMaster` 警告 + `drmModeSetCrtc: Permission denied` | 图形会话仍是 DRM master | 确认 `sudo systemctl stop gdm`；`pgrep -a gnome-shell` 应为空 |
 | `open /dev/dri/card0: Permission denied` | 非 root 且不在 video 组 | `sudo` 运行（学习项目）；render node 无此问题但也做不了模式设置 |
 | `找不到已连接且带有效模式的 connector` | VM 显卡未暴露模式/显示器未直通 | 检查 VM 显示设置（QEMU 建议 virtio-gpu）；`modetest -c` 对照 |

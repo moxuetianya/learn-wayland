@@ -157,7 +157,8 @@ xkb 的职责，模块 4 客户端侧见过，模块 12 会在合成器侧把它
 
 ## 3. 编译与运行
 
-依赖：`sudo apt install libinput-dev`（udev 开发文件随之一并就位）。
+依赖：`sudo apt install libinput-dev`（udev 开发文件随之一并就位）；
+或一次跑 `bash setup-vm.sh` 装齐全部模块依赖。
 注意：**本模块目录下的 Makefile 是空占位文件**，直接用下面的命令编译：
 
 ```bash
@@ -200,6 +201,7 @@ motion 的 dx/dy 已是加速后的毫米量；滚轮一格正好 1.0。
 
 | 现象 | 原因 | 解法 |
 |------|------|------|
+| `Package libinput was not found ...` + `fatal error: libinput.h` | 缺 `libinput-dev`，pkg-config 失败使编译命令展开为空（报错链同模块 9） | `sudo apt install libinput-dev` 或 `bash setup-vm.sh` |
 | `Failed to assign seat` / 一串 `Failed to open` | 无权打开 `/dev/input/event*` | sudo 运行，或把用户加入 input 组 |
 | 编译报 `udev_new` 隐式声明（GCC≥14 默认报错） | `main.c` 未 `#include <libudev.h>`（Ubuntu 24.04/GCC13 下仅警告） | 在文件头补一行 `#include <libudev.h>` |
 | 鼠标动了但打印不出事件 | 漏了先 `libinput_dispatch()` 就 `get_event` | 严格两段式（见 1.5） |
