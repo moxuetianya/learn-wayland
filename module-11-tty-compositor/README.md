@@ -309,7 +309,7 @@ sudo systemctl start gdm
 
 ## 8. 延伸阅读
 
-- [DRM/KMS 用户态 API 文档](https://drm.pages.freedesktop.org/drm-docs/drm/) — 内核官方
+- [DRM/KMS 用户态 API 文档](https://docs.kernel.org/gpu/drm-kms.html) — 内核官方
 - [tinywl](https://gitlab.freedesktop.org/wlroots/wlroots/-/tree/master/tinywl) — wlroots 的最小合成器，可视为"本模块 + xdg-shell + page flip"
 - [Weston](https://gitlab.freedesktop.org/wayland/weston) — 官方参考合成器
 - [mutter](https://gitlab.gnome.org/GNOME/mutter) — gnome-shell 背后的合成器库

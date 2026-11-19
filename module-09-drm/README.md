@@ -1,6 +1,6 @@
 # 模块 9：DRM/KMS——绕过一切抽象，直接点亮屏幕
 
-> 🗺️ **全景定位**: [docs/00 全景地图](../docs/00-big-picture.md) · [docs/01 显卡与显示](../docs/01-gpu-and-display.md)
+> 🗺️ **全景定位**: [docs/00 全景地图](../docs/00-big-picture.md) · [docs/01 显卡与显示](../docs/01-gpu-and-display.md) · [docs/05 KMS/EDID/链路协商](../docs/05-kms-edid-and-link.md)
 
 > 服务端三部曲之二。模块 8 解决了"协议怎么说"，本模块解决"像素怎么上屏"：
 > 不经 X11、不经 Wayland、不经任何合成器，直接对 `/dev/dri/card0` 下 ioctl，
@@ -174,9 +174,21 @@ dumb buffer: fb_id=68 handle=3 pitch=7680 size=8294400
 sudo systemctl start gdm
 ```
 
-旁路验证（不开图形界面也能玩 KMS 枚举）：装上 `libdrm-tests` 后
-`sudo modetest -c` 可以打印与本程序对应的 connector/CRTC 全表，用来对照
-自己程序的枚举结果。
+旁路验证（不开图形界面也能玩 KMS 枚举）：装上 `libdrm-tests` 后，用**本机
+驱动名**点开设备，打印与本程序对应的 connector/CRTC 全表，用来对照自己程序
+的枚举结果：
+
+```bash
+drv=$(sudo awk '{print $1}' /sys/kernel/debug/dri/0/name)   # qxl / virtio_gpu / i915 …
+sudo modetest -M "$drv" -c
+```
+
+为什么不直接 `sudo modetest -c`：老版本 libdrm 在不带 `-M/-D` 时**不会扫描
+`/dev/dri`**，而是拿一份硬编码的驱动名清单（i915/amdgpu/…/simpledrm）逐个
+尝试，`qxl`、`bochs`、`cirrus`、`vboxvideo`、`nvidia-drm`、`xe`、`vkms` 都不在
+清单里，于是刷一屏 `trying to open device '…'...failed` + `no device found`。
+而且这些版本里 `-D` 是 `drmOpen()` 的 busid，**不是设备路径**（2.4.123 之后
+才是），所以 `-D /dev/dri/card0` 同样无效。
 
 ## 4. 常见坑
 
@@ -185,7 +197,8 @@ sudo systemctl start gdm
 | `Package libdrm was not found in the pkg-config search path` + `fatal error: xf86drm.h` | 缺 `libdrm-dev`。典型报错链：pkg-config 找不到 `libdrm.pc` → Makefile 的 `$(shell pkg-config ...)` 展开为**空** → 编译器没有任何 `-I` 路径 → 头文件找不到 | `sudo apt install libdrm-dev`；一次装齐所有模块依赖用 `bash setup-vm.sh` |
 | `drmSetMaster` 警告 + `drmModeSetCrtc: Permission denied` | 图形会话仍是 DRM master | 确认 `sudo systemctl stop gdm`；`pgrep -a gnome-shell` 应为空 |
 | `open /dev/dri/card0: Permission denied` | 非 root 且不在 video 组 | `sudo` 运行（学习项目）；render node 无此问题但也做不了模式设置 |
-| `找不到已连接且带有效模式的 connector` | VM 显卡未暴露模式/显示器未直通 | 检查 VM 显示设置（QEMU 建议 virtio-gpu）；`modetest -c` 对照 |
+| `找不到已连接且带有效模式的 connector` | VM 显卡未暴露模式/显示器未直通 | 检查 VM 显示设置（QEMU 建议 virtio-gpu）；用 `modetest -M <驱动名> -c` 对照 |
+| `modetest -c` 刷一屏 `trying to open device '…'...failed` + `no device found` | 不带 `-M/-D` 时 modetest 只按**内置驱动名清单**探测，`qxl`/`bochs`/`cirrus`/`vboxvideo`/`nvidia-drm`/`xe`/`vkms` 都不在清单里；且 libdrm ≤2.4.11x 的 `-D` 是 busid 而非设备路径 | `sudo modetest -M "$(sudo awk '{print $1}' /sys/kernel/debug/dri/0/name)" -c`；libdrm ≥2.4.123 可用 `-D /dev/dri/card0` |
 | 图案整体斜着拖出"平行四边形" | 填像素时按 `width*4` 而不是 pitch 走行 | 一律用返回的 `pitch/stride`（见 `fill_buffer`） |
 | 颜色不对（红蓝互换之类） | fourcc 格式与填充顺序不匹配 | `DRM_FORMAT_XRGB8888` 低字节是 X、随后 R；对照 fourcc 定义 |
 | 退出后 TTY 黑屏/花屏 | 没恢复 CRTC 就销毁了 FB | 本模块已 `drmModeGetCrtc` 保存并恢复；玩脱了就切 VT 或 `start gdm` |
@@ -208,6 +221,11 @@ plane / sprite（让视频帧不进合成队列直接叠上屏幕）、多 CRTC 
 独立模式、fence 与显存同步等话题。本模块的 legacy `drmModeSetCrtc` 路线
 没有消失——模块 11 就原样复用它，先跑通再谈优雅。
 
+继续做模块 11/12 要注意 **render node**：GBM/EGL 需要
+`/dev/dri/renderD128`，而 qxl 这类纯 2D 虚拟显卡只暴露 `card0`。如果你在
+qxl 的 VM 里看到 `gbm_create_device` / `eglInitialize` 失败，先换成
+virtio-gpu（QEMU 开 `gl=on`，即 virgl/venus）再排查代码。
+
 ## 6. 练习
 
 1. **验证"扫描输出"**：把 `fill_buffer` 的蓝色分量从 128 改成按 `(x+y)`
@@ -225,7 +243,9 @@ plane / sprite（让视频帧不进合成队列直接叠上屏幕）、多 CRTC 
 
 ## 7. 延伸阅读
 
-- [DRM/KMS 内核文档（Mode Setting 章节）](https://drm.pages.freedesktop.org/drm-docs/drm/) —
+- [docs/05 KMS 对象、EDID 与链路协商](../docs/05-kms-edid-and-link.md) —
+  本模块背后的硬件原理：时序参数、EDID 字节结构、DP/HDMI 各自怎么协商
+- [DRM/KMS 内核文档（Mode Setting 章节）](https://docs.kernel.org/gpu/drm-kms.html) —
   dumb buffer、KMS 对象、master 语义的权威出处
 - [libdrm 仓库](https://gitlab.freedesktop.org/mesa/drm) — 本模块用的
   `xf86drm.h` / `xf86drmMode.h` 与 `modetest` 示例工具

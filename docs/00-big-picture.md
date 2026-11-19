@@ -160,7 +160,8 @@ X11 通过 XWayland 兼容层继续存活：GNOME/KDE 的 compositor 内嵌一�
 原理文档之间的依赖：
 
 ```
-00 全景地图 ──┬─▶ 01 显卡与显示 ──▶ 02 从电源到像素(启动链路)
+00 全景地图 ──┬─▶ 01 显卡与显示 ──┬─▶ 02 从电源到像素(启动链路)
+              │                   └─▶ 05 KMS/EDID/链路协商
               ├─▶ 03 音频栈
               └─▶ 04 登录与会话 ──▶ 02 的后半段(用户空间部分)
 ```
@@ -173,6 +174,11 @@ X11 通过 XWayland 兼容层继续存活：GNOME/KDE 的 compositor 内嵌一�
 | **显示控制器 / CRTC** | 显卡里独立于 GPU 的扫描引擎，负责「送出」像素 | [01](01-gpu-and-display.md) |
 | **显存 / VRAM / GEM** | 显卡本地内存；内核用 GEM 框架管理 buffer 对象 | [01](01-gpu-and-display.md) |
 | **framebuffer (fb)** | 一块装着一帧画面的内存，扫描引擎逐行读取它 | [01](01-gpu-and-display.md) |
+| **connector** | 一个物理输出口；热插拔状态与模式表都挂在它上面 | [05](05-kms-edid-and-link.md) |
+| **mode (模式)** | 一组像素时钟 + 时序参数（分辨率/刷新率由它算出） | [05](05-kms-edid-and-link.md) |
+| **EDID** | 显示器里的只读能力表：时序、格式、尺寸、范围 | [05](05-kms-edid-and-link.md) |
+| **DPCD** | DP 的链路状态寄存器区，EDID 之外的另一半信息 | [05](05-kms-edid-and-link.md) |
+| **DDC / AUX** | 读 EDID 的边带通道：HDMI 走 I2C，DP 走 AUX | [05](05-kms-edid-and-link.md) |
 | **DRM/KMS** | 内核显示子系统的统称；KMS 指「模式设置」(分辨率/刷新率) | [01](01-gpu-and-display.md) |
 | **DRM master** | 拥有 KMS 控制权的唯一进程（就是 compositor） | [01](01-gpu-and-display.md) |
 | **page flip** | 在 vblank 期间原子地切换扫描的 framebuffer，防撕裂 | [01](01-gpu-and-display.md) |

@@ -118,6 +118,9 @@ dmabuf 是 Linux 通用的「跨设备/跨进程 buffer 句柄」机制，也是
 - **Encoder**：把 CRTC 的像素流编码成 HDMI/DP 信号，中间桥梁；
 - **CRTC**（CRT Controller 的历史名字）：真正的扫描引擎。它持有「从哪块 framebuffer 读、扫描出多大区域、什么时序」的配置。**所谓「设置显示模式」就是配置 CRTC**（`drmModeSetCrtc`）。
 
+> 时序参数的逐字段含义、EDID 的字节结构、DP/HDMI 各自怎么协商链路，
+> 见 [05 KMS 对象、EDID 与链路协商](05-kms-edid-and-link.md)。
+
 ### 5.1 扫描线：CRTC 是一台不知疲倦的读稿机
 
 CRTC 每秒 60 次（60 Hz）把 framebuffer 从上到下扫一遍：
