@@ -414,7 +414,7 @@ DP 的 HPD 是事件，这才是它能用一条线挂多屏（**MST**）的入�
 |------|------|------|
 | 普通 HDMI/DP 显示器 | 256~512B | 模式表 = DTD + CEA |
 | **eDP 笔记本内屏** | 常常 **0B** | 时序来自驱动里的面板表 + DPCD |
-| **虚拟显卡（qxl/bochs）** | **0B** | 内核灌 DMT 表兜底 |
+| **虚拟显卡（qxl/bochs）** | **0B**（连 EDID 属性都没有） | 内核灌 DMT 表兜底 |
 | virtio-gpu | 256B（host 伪造） | 例如 `"QEMU Monitor"` 1280×800 |
 | 劣质线 / 转接头 | 读失败 | connected 但模式极少 |
 
@@ -432,6 +432,13 @@ edid = 0 字节       → size (mm) = 0x0，无 DTD
 
 所以 `modetest` 里那 35 个模式**不是显示器能力**，是 qxl 的默认剧本；`preferred
 1024×768` 也只是 host 窗口/控制台的尺寸。`size (mm) = 0x0` 是同一件事的证据。
+
+还有一层细节：qxl 的 connector 类型是 `VIRTUAL`，而内核
+`drm_connector_init()` 对 `VIRTUAL`/`WRITEBACK` **默认不挂 EDID 属性**
+（`if (connector_type != DRM_MODE_CONNECTOR_VIRTUAL && …)
+drm_connector_attach_edid_property()`）。所以 `modetest -c` 的属性表里也看不到
+`EDID` 那一项——不是读失败，是压根没有这个属性。virtio-gpu 想要 EDID 就得自己
+显式 attach，这也是它能给出 256 字节 `"QEMU Monitor"` 的原因。
 
 ---
 
@@ -471,6 +478,10 @@ sudo modetest -M "$drv" -s 37:1280x720
 # ⑤ 看链路训练（DP 机器）
 sudo cat /sys/kernel/debug/dri/0/DP-1/link_settings 2>/dev/null
 sudo dmesg | grep -iE 'link training|edid|mode_valid'
+
+# ⑥ 本仓库的教学版工具（模块 9 目录，make 时一起构建）
+cd ../module-09-drm && make && sudo ./drm-info
+./drm-info -e /sys/class/drm/card0-DP-1/edid    # 只解码 EDID，不需要 root
 ```
 
 > **`modetest -c` 的老坑**：libdrm ≤ 2.4.11x 在不带 `-M/-D` 时**不会扫描
@@ -482,7 +493,29 @@ sudo dmesg | grep -iE 'link training|edid|mode_valid'
 
 ---
 
-## 11. 与课程模块的关联
+## 11. 输出对照速查表
+
+同一件事在三个工具里的看法（`drv` 的取法见 §10）：
+
+| 你想知道 | `modetest -M $drv` | `edid-decode` | `drm-info`（本仓库） |
+|----------|--------------------|---------------|----------------------|
+| 有几个 DRM 设备 | 不显示 | — | 首行 `=== /dev/dri/card0 ===` |
+| 有几个口、插没插 | `-c` 的 `status` 列 | — | `[37] Virtual-1 connected` |
+| 口 → encoder → CRTC → fb | `-e` + `-p` 组合着看 | — | 一行：`encoder 38 -> crtc 36 (fb 54, …)` |
+| 模式表 | `-c` 的 modes 段 | — | 每个模式一行，带 totals 与极性 |
+| 模式来源 | `type` 列 | — | 同 modetest |
+| 各 CRTC 是否在扫 | `-p` | — | 末尾 `CRTC:` 段 |
+| EDID 原始字节 | 只给 blob 长度 | 全解码 | `-e`，或连接时自动解码 |
+| 支持范围 | — | range limits | `支持范围 50-125Hz …` |
+| 色彩/音频/HDR 能力 | — | CEA / VSDB | `CEA-861 … HDMI VSDB` |
+| 属性（DPMS/link-status） | `-c` 的 props | — | 每行一个，只读项标 `[只读]` |
+
+一句话分工：**`modetest` 能改（设模式/关屏），`edid-decode` 只看 EDID，
+`drm-info` 把「对象关系 + 模式 + EDID + 属性」放在一屏里。**
+
+---
+
+## 12. 与课程模块的关联
 
 | 模块 | 本篇的哪一部分是它的原理 |
 |------|--------------------------|
@@ -498,7 +531,7 @@ sudo dmesg | grep -iE 'link training|edid|mode_valid'
 
 ---
 
-## 12. 延伸阅读
+## 13. 延伸阅读
 
 - [DRM/KMS 内核文档（Mode Setting 章节）](https://docs.kernel.org/gpu/drm-kms.html) —
   KMS 对象模型、atomic API、connector 语义的权威出处

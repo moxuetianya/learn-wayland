@@ -190,6 +190,58 @@ sudo modetest -M "$drv" -c
 而且这些版本里 `-D` 是 `drmOpen()` 的 busid，**不是设备路径**（2.4.123 之后
 才是），所以 `-D /dev/dri/card0` 同样无效。
 
+### 3.1 旁路工具：`drm-info`
+
+同目录还有一个**只读**工具 `drm-info`（`make` 会一起构建），把本模块用到的
+`drmModeGetResources()` 那一族 API 的全部结果摊开：connector → encoder →
+CRTC → fb 的绑定、每个 connector 的模式表、EDID blob 解码、属性表。
+
+```bash
+make
+sudo ./drm-info                 # 自动探测 /dev/dri/card0…card9
+sudo ./drm-info -c 37           # 只看一个 connector
+./drm-info -e /sys/class/drm/card0-DP-1/edid   # 只解码 EDID，不需要 root
+```
+
+qxl VM 上的真实输出（节选）：
+
+```
+=== /dev/dri/card0 ===
+驱动   qxl 0.1.0 (20120117) — RH QXL
+资源   CRTC×4  connector×4  encoder×4  fb×0
+
+[37] Virtual-1  connected  size=0x0mm  modes=35  encoders=1
+      encoder 38 (possible_crtcs=0x1) -> crtc 36 (fb 54, 1024x768@60.00Hz)
+      #0  1024x768  60.00Hz  65000kHz  1024x768  totals 1344x806  nhsync,nvsync  preferred,driver
+      ...
+      EDID: 无此属性（VIRTUAL/WRITEBACK 类 connector 默认不挂）
+      属性:
+      DPMS                 = On(0)
+      link-status          = Good(0)
+      non-desktop          = 0  [只读]
+
+CRTC:
+  [36] fb 54  1024x768@60.00Hz  pos=(0,0)  已启用
+  [41] 未启用（fb 0）
+```
+
+有真 EDID 的机器（virtio-gpu / 真显卡）会多出一段解码：
+
+```
+      EDID:
+      EDID connector 属性（256 字节）
+        厂商 RHT  产品 0x1234  序列 0x00000000  生产 2014-W42  EDID 1.4  2 块
+        DTD1  1280x800@74.99Hz  clock=107.30MHz  htot=1728 vtot=828  hfp=320 hsw=38  ...
+        size=325x203mm  nhsync,nvsync
+        描述符3 支持范围 50-125Hz, 行频 30-160kHz, 最大时钟 2550MHz
+        描述符4 显示器名 "QEMU Monitor"
+        CEA-861 rev3: 1 个数据块, 6 个 VIC
+```
+
+和 `modetest` 的分工：`modetest` 是 libdrm 的通用瑞士军刀（能改模式、关屏）；
+`drm-info` 是本仓库的教学版，多打印管线绑定和 EDID 解码，少了一堆暂时用不到
+的选项。两者字段的硬件含义见 [docs/05](../docs/05-kms-edid-and-link.md)。
+
 ## 4. 常见坑
 
 | 现象 | 原因 | 解法 |
@@ -240,6 +292,9 @@ virtio-gpu（QEMU 开 `gl=on`，即 virgl/venus）再排查代码。
    显示不同图案（各配一个 CRTC）——这就是多显示器合成器的雏形。
 5. **观察 master 排他**：不停 gdm，先在图形会话里 `sudo ./drm-demo`，
    阅读警告内容并确认它死在哪一步；再对照 1.5 解释为什么。
+6. **对照枚举**：用 `sudo ./drm-info` 与自己程序的输出逐项对比（connector id、
+   模式数、encoder/CRTC 绑定），再用 `drm-info -e` 解码 `/sys/class/drm/*/edid`，
+   确认「模式表不是显示器能力，而是 EDID ∩ 驱动限制」。
 
 ## 7. 延伸阅读
 
