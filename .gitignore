@@ -14,6 +14,7 @@ module-09-drm/drm-demo
 module-09-drm/drm-info
 module-10-libinput/libinput-demo
 module-11-tty-compositor/compositor
+module-11-tty-compositor/client
 module-12-full-compositor/compositor
 module-13-audio/audio-lab
 module-14-session/session-info

@@ -17,13 +17,17 @@
  *     make
  *     sudo ./compositor
  *
- * 然后在另一个 TTY 或 SSH 里用打印出来的 WAYLAND_DISPLAY 连接客户端:
+ * 然后在另一个 TTY 或 SSH 里连接本模块自带的纯 wl_surface 客户端:
  *
- *     WAYLAND_DISPLAY=wayland-1 weston-simple-shm
+ *     XDG_RUNTIME_DIR=/tmp/wayland-runtime WAYLAND_DISPLAY=wayland-1 ./client
+ *
+ * (注意: weston-simple-shm 需要 xdg-shell / fullscreen-shell, 连本合成器
+ *  会在 weston >= 6 上直接 assert(0) 崩溃, 见 README "常见坑"。)
  */
 
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -903,6 +907,22 @@ static void fini_libinput(struct mc_compositor *c) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Signal handling                                                    */
+/* ------------------------------------------------------------------ */
+
+/* wl_event_loop_add_signal 把 SIGINT/SIGTERM 变成事件循环里的一次普通回调:
+ * 回调里 wl_display_terminate() 让 wl_display_run() 返回, 从而走正常的
+ * cleanup() 恢复 CRTC。没有它, SSH 里 Ctrl+C / pkill 走默认终止路径直接
+ * 杀进程, 恢复代码被跳过 —— CRTC 仍在扫描已死进程的 framebuffer, 屏幕
+ * 从此黑屏, 直到手动切一次 VT (chvt) 或重启显示管理器。 */
+static int on_terminate_signal(int signum, void *data) {
+    struct mc_compositor *c = data;
+    printf("\n收到信号 %d, 正在退出并恢复 CRTC...\n", signum);
+    wl_display_terminate(c->display);
+    return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* Cleanup                                                           */
 /* ------------------------------------------------------------------ */
 
@@ -1016,10 +1036,20 @@ int main(void) {
             fprintf(stderr, "无法把 libinput fd 加入事件循环\n");
     }
 
+    /* SIGINT/SIGTERM → 干净退出 (走 cleanup 恢复 CRTC, 见 on_terminate_signal) */
+    if (!wl_event_loop_add_signal(compositor.loop, SIGINT,
+                                  on_terminate_signal, &compositor) ||
+        !wl_event_loop_add_signal(compositor.loop, SIGTERM,
+                                  on_terminate_signal, &compositor))
+        fprintf(stderr, "警告: 注册信号处理失败\n");
+
     printf("\nCompositor 已启动。\n");
     printf("  WAYLAND_DISPLAY=%s\n", socket);
-    printf("  连接客户端示例: WAYLAND_DISPLAY=%s weston-simple-shm\n", socket);
-    printf("  退出: Esc 或 Ctrl+Alt+Backspace\n\n");
+    printf("  注意: 屏幕此刻为纯黑是正常的, 客户端提交第一帧后才有画面\n");
+    printf("  连接客户端示例:\n");
+    printf("    XDG_RUNTIME_DIR=%s WAYLAND_DISPLAY=%s ./client\n",
+           getenv("XDG_RUNTIME_DIR"), socket);
+    printf("  退出: Esc 或 Ctrl+Alt+Backspace (或 Ctrl+C, 均会恢复 CRTC)\n\n");
 
     /* 首次清屏 */
     mc_repaint(&compositor);

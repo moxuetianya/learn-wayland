@@ -255,13 +255,25 @@ Compositor 已启动。
   退出: Esc 或 Ctrl+Alt+Backspace
 ```
 
-在另一个 TTY（Ctrl+Alt+F4）或 SSH 里连接客户端验证：
+在另一个 TTY（Ctrl+Alt+F4）或 SSH 里连接客户端验证（socket 名以合成器实际打印的为准）：
 
 ```bash
-WAYLAND_DISPLAY=wayland-1 weston-simple-shm   # 需安装 weston，只依赖 wl_surface
+make                 # 同时编出 compositor 和 client
+XDG_RUNTIME_DIR=/tmp/wayland-runtime WAYLAND_DISPLAY=wayland-1 ./client
+# 不带参数一直运行（Ctrl+C 退出）；./client 5 只跑 5 秒
 ```
 
-能移动的彩色渐进方块出现在屏幕左上角 = 你的合成器完成了第一次客户组合成。
+带弹跳小球的渐变窗口出现在屏幕左上角 = 你的合成器完成了第一次客户组合成。
+
+> **屏幕纯黑是正常的**：启动后、客户端提交第一帧之前，`mc_repaint()` 清出的
+> 就是全黑画面——没有 surface 可画，别当成故障。
+
+> **别用 `weston-simple-shm` 验证本模块**：weston ≥ 6 的 simple-shm 在
+> `create_window` 里要求服务端提供 `xdg_wm_base` 或 `zwp_fullscreen_shell_v1`
+> 之一，二者皆无时直接 `assert(0)` 崩溃（Ubuntu 22.04 的 weston 9.0 复现于
+> clients/simple-shm.c:201）。本模块刻意只实现 wl_compositor + wl_shm，
+> xdg-shell 见模块 12——所以自带 `client.c` 这个"纯 wl_surface"客户端
+> （课程模块 02~07 的客户端也都走 xdg-shell，同样连不上本模块）。
 
 退出与恢复：
 
@@ -278,7 +290,11 @@ sudo systemctl start gdm
 | `Package libdrm/libinput was not found ...` + `fatal error: xf86drm.h` 等 | 缺服务端开发包，pkg-config 失败 → `CFLAGS`/`LDFLAGS` 展开为空（报错链同模块 9） | `bash setup-vm.sh`，或 `sudo apt install libdrm-dev libinput-dev libudev-dev` |
 | `drmSetMaster 失败` 警告后黑屏/无输出 | gnome-shell 仍是 DRM master | 确认 `systemctl stop gdm` 已执行；`pgrep -a gnome-shell` 应为空 |
 | `找不到已连接且带有效模式的 connector` | VM 显卡是 virtio-gpu 且未暴露模式 / 无显示器直通 | 检查 VM 显示设置；QEMU 建议用 `virtio-gpu` 并指定分辨率 |
-| 客户端能连上但"什么都没显示" | 该客户端需要 xdg-shell（本模块未实现）或非 shm buffer | 换纯 wl_surface 客户端，如 `weston-simple-shm`；xdg-shell 见模块 12 |
+| 客户端能连上但"什么都没显示" | 客户端在等服务端没有的协议（shell 等），从未 commit 像素 | 用本模块 `./client`；xdg-shell 见模块 12 |
+| 启动后屏幕全黑 | 正常：清屏后尚无客户端 surface | 连接 `./client` 后出现画面（见 §4） |
+| `weston-simple-shm` 立刻 `Assertion '0' failed`（simple-shm.c:201） | weston ≥ 6 的 simple-shm 要求 `xdg_wm_base` / `zwp_fullscreen_shell_v1`，本模块都没有 | 用 `./client`；xdg-shell 在模块 12 |
+| SSH 里 `Ctrl+C`/`pkill` 杀掉合成器后屏幕一直黑 | 进程没机会恢复 CRTC，扫描的仍是死进程的 framebuffer | 本模块已注册 SIGINT/SIGTERM 干净退出；旧进程已残留时 `sudo chvt 3` 切一次 VT 或 `sudo systemctl start gdm` |
+| SSH 里客户端报 `cannot open display` / 连接被拒 | 连到了残留的旧 socket（如 `/run/user/1000/wayland-0`），或 `XDG_RUNTIME_DIR` 不对 | 显式 `XDG_RUNTIME_DIR=/tmp/wayland-runtime WAYLAND_DISPLAY=wayland-0 ./client` |
 | 合成器退出后 TTY 花屏 | CRTC 恢复失败/被跳过 | 切到其它 TTY 再切回；一般 `start gdm` 即可恢复 |
 | 客户端只画了一帧就卡住 | 合成器忘了 `wl_buffer_send_release`（本模块已处理，见 surface_commit） | 对照 2.4 的 release 语义排查 |
 | 非 root 运行打开 card0 成功但模式设置全失败 | 非 master 无权模式设置 | `sudo`；或走 logind 授权（本课程不展开） |
@@ -300,7 +316,7 @@ sudo systemctl start gdm
    像素"的通路。
 2. **移动的窗口**：在 `handle_pointer_motion` 里累计 dx/dy 更新第一个 surface 的
    x/y 并 repaint——你就实现了最原始的"拖拽"。
-3. **观察协议流**：用 `WAYLAND_DEBUG=1 WAYLAND_DISPLAY=wayland-1 weston-simple-shm`
+3. **观察协议流**：用 `WAYLAND_DEBUG=1 WAYLAND_DISPLAY=wayland-1 ./client`
    重跑客户端，对照 2.4 的状态机解读 attach/commit/release/frame 序列。
 4. **制造撕裂**：写一个全屏渐变动画（每帧 memset 整屏），大概率能看到撕裂线——
    这就是单缓冲没有 vsync 的直观代价，也是 page flip 存在的理由。
