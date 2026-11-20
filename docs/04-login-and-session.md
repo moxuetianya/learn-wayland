@@ -86,6 +86,10 @@ State=active          ← 拥有 seat 的前台会话 (同一时刻一个 seat �
 - **compositor 的正道**：通过 logind D-Bus 接口 `TakeControl()`/`TakeDevice()` 拿设备（GDM 登录的 Mutter、以及 wlroots 系 compositor 都这么干），**不需要 root**；
 - **课程野路子**：TTY 上 `sudo ./compositor`——root 直接无视所有授权（模块 11/12 的做法）。模块 14 的 `take-control` 实验演示正道。
 
+> `TakeDevice` 交出的 fd 到底是什么（dup 语义、revoke、master 交接）、
+> 以及 seat 与 VT 的隔离关系，见
+> [06 会话设备管理：TakeDevice、revoke 与多座席](06-seat-devices-and-revoke.md)。
+
 ### 3.4 会话/电源管理
 
 `loginctl lock-session`、`suspend`、`SwitchTo`（VT 切换）、会话结束清理……全部是 logind 的 D-Bus 方法。
@@ -246,4 +250,4 @@ journalctl -b 0 | grep -iE 'logind|gdm|session' | tail -20
 
 ---
 
-至此五篇原理地图完整。回到 [README](../README.md) 查看课程全貌，或直接进入 [模块 1](../module-01-connection/) 开始动手。
+至此六篇原理地图完整。回到 [README](../README.md) 查看课程全貌，或直接进入 [模块 1](../module-01-connection/) 开始动手。

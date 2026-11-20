@@ -163,7 +163,8 @@ X11 通过 XWayland 兼容层继续存活：GNOME/KDE 的 compositor 内嵌一�
 00 全景地图 ──┬─▶ 01 显卡与显示 ──┬─▶ 02 从电源到像素(启动链路)
               │                   └─▶ 05 KMS/EDID/链路协商
               ├─▶ 03 音频栈
-              └─▶ 04 登录与会话 ──▶ 02 的后半段(用户空间部分)
+              └─▶ 04 登录与会话 ──┬─▶ 02 的后半段(用户空间部分)
+                                  └─▶ 06 会话设备/revoke/多座席
 ```
 
 ## 6. 术语速查表
@@ -180,7 +181,7 @@ X11 通过 XWayland 兼容层继续存活：GNOME/KDE 的 compositor 内嵌一�
 | **DPCD** | DP 的链路状态寄存器区，EDID 之外的另一半信息 | [05](05-kms-edid-and-link.md) |
 | **DDC / AUX** | 读 EDID 的边带通道：HDMI 走 I2C，DP 走 AUX | [05](05-kms-edid-and-link.md) |
 | **DRM/KMS** | 内核显示子系统的统称；KMS 指「模式设置」(分辨率/刷新率) | [01](01-gpu-and-display.md) |
-| **DRM master** | 拥有 KMS 控制权的唯一进程（就是 compositor） | [01](01-gpu-and-display.md) |
+| **DRM master** | 拥有 KMS 控制权的唯一进程（就是 compositor） | [01](01-gpu-and-display.md) · [06](06-seat-devices-and-revoke.md) |
 | **page flip** | 在 vblank 期间原子地切换扫描的 framebuffer，防撕裂 | [01](01-gpu-and-display.md) |
 | **vblank** | CRT 时代的垂直消隐期，如今是换帧的安全窗口 | [01](01-gpu-and-display.md) |
 | **wl_shm** | 「共享内存 buffer」协议：应用传 fd 给 compositor | 模块 2 |
@@ -189,9 +190,11 @@ X11 通过 XWayland 兼容层继续存活：GNOME/KDE 的 compositor 内嵌一�
 | **GBM** | Mesa 提供的「给 EGL 分配可扫描显存 buffer」的抽象 | [01](01-gpu-and-display.md) |
 | **evdev** | 内核输入设备的统一接口 `/dev/input/event*` | 模块 10 |
 | **libinput** | 用户态输入加工库：合并 evdev + 手势/加速度/去抖 | 模块 10 |
-| **seat** | 一套「键盘+鼠标+显示器+扬声器」的组合，logind 管理 | [04](04-login-and-session.md) |
+| **seat** | 一套「键盘+鼠标+显示器+扬声器」的组合，logind 管理 | [04](04-login-and-session.md) · [06](06-seat-devices-and-revoke.md) |
 | **session** | 一次登录产生的会话，拥有它的 seat 的使用权 | [04](04-login-and-session.md) |
-| **VT (虚拟终端)** | 一台机器上的多个「虚拟屏幕」，Ctrl+Alt+F3 切换的那个 | [02](02-boot-to-pixels.md) |
+| **TakeDevice** | logind 把设备 fd（dup）交给会话控制者的 D-Bus 方法 | [06](06-seat-devices-and-revoke.md) |
+| **revoke** | 让已发出的 evdev fd 立即失效（`EVIOCREVOKE`），不可逆 | [06](06-seat-devices-and-revoke.md) |
+| **VT (虚拟终端)** | 一台机器上的多个「虚拟屏幕」，Ctrl+Alt+F3 切换的那个 | [02](02-boot-to-pixels.md) · [06](06-seat-devices-and-revoke.md) |
 | **PAM** | 可插拔认证模块：login/GDM 的密码校验都委托给它 | [04](04-login-and-session.md) |
 | **显示管理器 (DM)** | 图形登录界面(GDM/SDDM)背后的程序 | [04](04-login-and-session.md) |
 | **ALSA** | 内核音频框架 + 用户库 | [03](03-audio-stack.md) |

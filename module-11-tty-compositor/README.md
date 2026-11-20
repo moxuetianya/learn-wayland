@@ -291,7 +291,7 @@ sudo systemctl start gdm
 | commit 后立即触发 frame callback | page flip 完成后触发，真正对齐刷新率 |
 | 每次 commit 全屏重绘 | damage tracking + 局部重绘/仅 dirty 区域合成 |
 | 客户端永远在 (0,0)，无输入转发 | xdg-shell 窗口管理、焦点、指针/键盘路由（模块 12 迈出第一步） |
-| root 直跑，不处理 VT 切换 | logind 集成：VT 切走时 DropMaster、切回时恢复；支持多 seat |
+| root 直跑，不处理 VT 切换 | logind 集成（[docs/06](../docs/06-seat-devices-and-revoke.md)）：`TakeDevice` 拿 fd、`PauseDevice` 时 suspend、切回时恢复；支持多 seat |
 | 只支持 wl_shm 客户端 | EGL/GPU 直渲染（linux-dmabuf 协议） |
 
 ## 7. 练习
@@ -309,6 +309,7 @@ sudo systemctl start gdm
 
 ## 8. 延伸阅读
 
+- [docs/06 会话设备管理](../docs/06-seat-devices-and-revoke.md) — 生产合成器为什么要把 `open()` 换成 logind `TakeDevice`、以及切 VT 时内核如何收回设备
 - [DRM/KMS 用户态 API 文档](https://docs.kernel.org/gpu/drm-kms.html) — 内核官方
 - [tinywl](https://gitlab.freedesktop.org/wlroots/wlroots/-/tree/master/tinywl) — wlroots 的最小合成器，可视为"本模块 + xdg-shell + page flip"
 - [Weston](https://gitlab.freedesktop.org/wayland/weston) — 官方参考合成器

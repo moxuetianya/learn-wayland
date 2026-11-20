@@ -226,6 +226,19 @@ motion 的 dx/dy 已是加速后的毫米量；滚轮一格正好 1.0。
 libinput 本身的测试基建（`libinput-debug-events`、replay 框架）——它把
 "输入设备的手感"从玄学变成了可回归测试的工程问题。
 
+### 5.1 本模块故意没做的事：会话感知
+
+本程序以 **root 直接 `open()`** 设备节点（`open_restricted` 里就是裸 `open(2)`），
+没有经过 logind 的 `TakeDevice`。后果很具体：
+
+- 内核没有可用的 `EVIOCREVOKE` 目标——`revoke` 只作用于「同一个 open file
+  description」，而我们的 fd 与 logind 的 fd 是两个不同的 `evdev_client`；
+- 所以**切到别的 VT 之后，本程序仍然会打印所有按键**（包括别的会话里输入的密码）；
+- 也不响应会话失活：生产合成器要在会话暂停时调 `libinput_suspend()`。
+
+生产做法（`TakeDevice` 拿 dup → `PauseDevice` → suspend）与 seat/VT 的隔离
+关系，见 [docs/06 会话设备管理](../docs/06-seat-devices-and-revoke.md)。
+
 ## 6. 练习
 
 1. **数一数 open_restricted**：在回调里打印每次被打开的 `path`，对照
@@ -246,6 +259,8 @@ libinput 本身的测试基建（`libinput-debug-events`、replay 框架）—�
 
 ## 7. 延伸阅读
 
+- [docs/06 会话设备管理](../docs/06-seat-devices-and-revoke.md) — logind 的
+  `TakeDevice`、revoke 与 seat/VT，解释「为什么本模块能跨 VT 收键」
 - [libinput 官方文档](https://wayland.freedesktop.org/libinput/doc/latest/) —
   设备处理语义、配置项、seat 模型的权威说明
 - [libinput API 参考](https://wayland.freedesktop.org/libinput/doc/latest/api/) —

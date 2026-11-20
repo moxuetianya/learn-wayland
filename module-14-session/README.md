@@ -31,6 +31,10 @@
 
 **`me` 的设计意图**：在图形会话的终端里跑 vs 在 ssh 里跑，输出截然不同——「登录」与「起个 shell」的区别不再是抽象概念。
 
+> `TakeControl` 之后 `TakeDevice` 交出的 fd 是什么（dup）、切会话时如何被
+> `EVIOCREVOKE` / `DROP_MASTER` 收回，见
+> [docs/06 会话设备管理](../docs/06-seat-devices-and-revoke.md)。
+
 ## 代码走读
 
 [`main.c`](main.c)：
@@ -84,7 +88,9 @@ bash inspect.sh          # 系统性观察清单 (6 章)
 ## 延伸阅读
 
 - [sd-login(3) 手册](https://man.archlinux.org/man/sd-login.3.en)
+- [docs/06 会话设备管理](../docs/06-seat-devices-and-revoke.md) — `TakeDevice`
+  的 fd 语义、revoke 与 seat/VT 隔离
 - [logind D-Bus 接口](https://www.freedesktop.org/wiki/Software/systemd/logind/) — TakeControl/TakeDevice 的权威定义
 - [sddm 源码](https://github.com/sddm/sddm) — 读一个真实显示管理器的会话编排
 
-回到 [课程地图](../README.md)。至此 14 个模块 + 5 篇原理文档全部完成 🎉
+回到 [课程地图](../README.md)。至此 14 个模块 + 6 篇原理文档全部完成 🎉

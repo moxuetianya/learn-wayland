@@ -108,6 +108,10 @@ node 调用 `drmSetMaster()` 成为 master 后才允许 `drmModeSetCrtc` 等，�
 普通用户经 logind 的 `TakeDevice` 授权成为 master（gnome-shell、wlroots
 都这么干）。退出时 `drmDropMaster` 归还身份。
 
+> `TakeDevice` 如何把 fd 交出来、切 VT 时如何收回（revoke / drop master）
+> 以及 seat 与 VT 的关系，见
+> [docs/06 会话设备管理](../docs/06-seat-devices-and-revoke.md)。
+
 ## 2. 代码走读
 
 单文件 `main.c`，按 `main()` 执行顺序：
