@@ -154,9 +154,14 @@ static void on_process(void *userdata) {
     if (buf->datas[0].data == NULL)
         return;
 
-    /* requested 是图调度器要的帧数; 为 0 时用整个 buffer */
-    n_frames = b->requested ? b->requested
+    /* requested 是图调度器要的帧数 (PipeWire >= 0.3.49 才有此字段);
+     * 旧版没有调度器建议, 就用整个 buffer —— 语义等价于 requested == 0 */
+#if PW_CHECK_VERSION(0, 3, 49)
+    n_frames = b->requested ? (uint32_t)b->requested
                             : (uint32_t)(buf->datas[0].maxsize / stride);
+#else
+    n_frames = (uint32_t)(buf->datas[0].maxsize / stride);
+#endif
 
     samples = (int16_t *)buf->datas[0].data;
     for (uint32_t i = 0; i < n_frames; i++) {
