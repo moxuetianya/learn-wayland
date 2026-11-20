@@ -13,6 +13,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <pwd.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -82,12 +83,15 @@ static int cmd_sessions(void) {
             char *desk = sess_get(id, sd_session_get_desktop);
             int active = 0;
             uid_t uid = 0;
-            char *user = NULL;
+            struct passwd *pw;
+            char *user;
 
             active = sd_session_is_active(id) > 0;
             sd_session_get_uid(id, &uid);
-            if (sd_session_get_username(id, &user) < 0)
-                user = strdup("?");
+            /* sd_session_get_username 是 systemd 252+ API (dut2 是 249 编不过);
+             * 通用写法: 先取 uid, 再 getpwuid 查用户名 */
+            pw = getpwuid(uid);
+            user = strdup(pw ? pw->pw_name : "?");
 
             printf("  ── session %s %s ─────────────────────────\n",
                    id, active ? "★ active" : "(后台, 被冻结)");
