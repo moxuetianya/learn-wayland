@@ -248,7 +248,34 @@ bool seat_has_vts(Seat *s) {
 - 多座席 = **多套独立硬件**（各自的显卡与键鼠，`ID_SEAT` 标签不同），
   不是共享同一套 tty1–7。
 
-### 4.2 同一 seat0 上的多个 session：各占一个 VT
+### 4.2 multi-user.target 下，seat1+ 的屏幕为什么是黑的
+
+一个自然的疑问：getty 都跑起来了，seat1 的显示器上会有字吗？
+**不会有，而且是结构性的**——整条文本控制台链路（getty → VT → fbcon → 卡）
+只存在于 seat0：
+
+```
+multi-user.target 的全部显示活动：
+  getty@tty2..6 ──► /dev/ttyN (VT) ──► fbcon ──► 主卡   ← 全在 seat0
+  seat1：无 VT、无 getty、无人 scanout ──► 无信号 / 黑屏
+```
+
+- VT 是内核的**单套**资源（§4.1），全部记在 seat0 名下；seat1 上没有任何
+  tty 设备节点，键盘事件只喂 active VT 的行规程——**想在 seat1 上开文本
+  终端，在内核层面就无处安放**；
+- 没人对 seat1 的卡 modeset，输出口从未被点亮，显示器最多留着固件残影。
+
+换个角度看，**target 不是开关，「谁驱动那张卡」才是**：graphical.target
+配一个不支持多 seat 的 DM，seat1 照样黑；反过来 multi-user.target 下手动
+跑个合成器，seat1 一样能亮。点亮 seat1 的三条路：
+
+| 路径 | 做法 | 备注 |
+|------|------|------|
+| 多 seat 感知的 DM | GDM 监听 logind 的 `SeatNew`，对每个带显示能力的 seat 各起一个 greeter | 「一台 PC 两人同时用」的标准形态 |
+| 手动跑合成器 | `weston --seat=seat1`，经 `TakeControl("seat1")` 拿设备 | **无 VT 语义**：切换走 §3.2 的 `pause` 协商，收不到 VT 信号 |
+| 模块 9 偷懒法 | `sudo DRM_CARD=/dev/dri/card1 ./drm-demo`（root 直当 master） | 全程不碰 tty——反证 tty/VT 是 seat0 专属的历史包袱，不是 DRM/KMS 的必要条件 |
+
+### 4.3 同一 seat0 上的多个 session：各占一个 VT
 
 | 方向 | 行为 |
 |------|------|
@@ -270,7 +297,7 @@ VT 这一层不会串，但**绕过 VT 直接读 evdev 会串**。
 边角情况：logind 允许**多个 session 挂在同一个 VT 上**（代码注释里吐槽过老用户态
 这么干）。这种情况下两者确实共享同一套输入输出。
 
-### 4.3 验证
+### 4.4 验证
 
 ```bash
 loginctl list-seats                 # seat0 常驻；是否还有 seat1
@@ -359,6 +386,7 @@ if (drmSetMaster(c->drm_fd) == 0) { ... }
 | `drmSetMaster` 报 `Permission denied` | 已有 master（图形会话在跑） |
 | 多座席机器上只有一套键鼠生效 | 设备的 `ID_SEAT` 没配对，或都在 seat0 |
 | seat1 的会话无法 `chvt` | seat1 没有 VT（§4.1），切换由 logind 协商 |
+| `multi-user.target` 下第二张卡的显示器黑屏 | 正常：getty/VT/fbcon 只在 seat0，没人驱动 seat1 的卡（§4.2） |
 | 切换 VT 后黑屏、输入全无 | 客户端没 ack `pause` / 没恢复 `SET_MASTER` |
 
 ---

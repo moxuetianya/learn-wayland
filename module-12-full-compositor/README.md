@@ -236,6 +236,12 @@ configure 前不得 commit，不发它规矩的客户端会永远卡住不画。
 
 迟到的 keyboard 资源要**补发一次 enter**，否则这个客户端永远收不到按键。
 
+顺带分清两个容易混淆的 "seat"：`wl_seat` 是**协议层**概念——单个合成器内部
+对输入设备的逻辑分组；logind/udev 的 seat0/seat1 是**会话设备管理层**概念
+（`ID_SEAT` 标签分组，见 [docs/06 §4](../docs/06-seat-devices-and-revoke.md)）。
+多 seat 机器的正常形态不是一个合成器跨两个 seat，而是**每个 logind seat
+各跑一个合成器**，各自广播自己的 wl_seat globals。
+
 ### 3.5 输入路由：从 printf 到转发
 
 模块 11 的 `handle_keyboard`/`handle_pointer_*` 只 printf；模块 12 的
