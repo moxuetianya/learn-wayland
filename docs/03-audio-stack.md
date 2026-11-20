@@ -127,6 +127,31 @@ PipeWire 的核心思想：整个系统的音频是一张**节点图 (node graph
 - **兼容层**：PipeWire 同时实现 PulseAudio (`pipewire-pulse`) 和 JACK (`pipewire-jack`) 的协议替换库，老应用无感迁移——这就是为什么 `pactl`（PulseAudio 的工具）在纯 PipeWire 系统上照常工作；
 - **ALSA 接管**：`pipewire-alsa` 让 `default` 设备重定向进 PipeWire，模块 13 会亲眼验证这条路径。
 
+### 5.1 镜像的另一边：麦克风也是 PipeWire 管（source/sink 对称）
+
+问「录音麦克风归谁管、和音箱是不是一种逻辑」——是，而且是**同一套模型的两个方向**：
+
+| 概念 | 数据方向 | 例子 | wpctl status 里的栏 |
+|------|----------|------|---------------------|
+| **sink（汇）** | 应用 → 设备 | 扬声器、耳机 | `Sinks` |
+| **source（源）** | 设备 → 应用 | 麦克风、线路输入 | `Sources` |
+
+- 播放：app → **sink**（音箱）；录音：**source**（麦克风）→ app——箭头反过来，其余（节点、端口、WirePlumber 策略、默认设备）完全一样；
+- 对称性一直穿透到内核层：§3 里声卡设备的 `pcmC0D0p`（**p**layback）/`pcmC0D0c`（**c**apture）后缀就是同一张卡的两个方向。USB 摄像头自带麦克风 = 一个只有 source 的设备；笔记本内置声卡 = 同时暴露 source + sink；
+- 默认设备操作也对称，但 `wpctl` 用**负号区分方向**（sink 用正 id，source 用负 id）：
+
+```bash
+wpctl status                     # Sinks / Sources 两栏各带编号
+wpctl set-default <id>           # 设默认音箱
+wpctl set-default -<id>          # 设默认麦克风（注意负号）
+```
+
+除方向外有三处**实际差异**：
+
+1. **权限**：录音涉及隐私，桌面经 xdg-desktop-portal 对应用的麦克风访问弹授权框（§6 的 portal 在同一位置起作用）；播放一般无此门槛；
+2. **monitor（监听源）**：每个 sink 自带一个 `monitor` source，内容是「正在播出的声音」——录屏软件录「系统声音」用的就是它，不用真的回环接硬件；
+3. **蓝牙**：A2DP profile 下耳机是纯 sink（只能播）；要用麦克风必须切到 HFP/HSP profile，音质骤降——蓝牙协议的限制，不是 PipeWire 的锅。
+
 ## 6. Wayland 桌面里的音频：各管一段
 
 现在回答「Wayland 和音频到底是什么关系」——**协议上零关系，桌面上强协作**：
@@ -156,6 +181,7 @@ X11 时代任何应用都能用 XSHM/XDAMAGE 直接抓全屏；Wayland 下这条
 # ① 内核层：ALSA 声卡
 cat /proc/asound/cards
 aplay -l                        # libasound 看到的播放设备 (alsa-utils)
+arecord -l                      # 录音设备——每张卡同样有 c(apture) 方向
 
 # ② 用户库：ALSA 插件路径
 cat ~/.asoundrc /etc/asound.conf 2>/dev/null
@@ -172,6 +198,7 @@ pw-top                          # 实时: 每个节点的量化延迟/占用 (�
 
 # ⑤ 声音在硬件上流动时
 cat /proc/asound/card0/pcm0p/sub0/hw_params   # 播放音乐时非空: 格式/采样率/周期
+cat /proc/asound/card0/pcm0c/sub0/hw_params   # 录音时看 c(apture) 设备的协商结果
 ```
 
 > 虚拟机注意：QEMU/KVM 默认声卡是 `intel-hda` 或 `ac97`，PipeWire 在 VM 里同样正常工作；若无声卡可加 `-device intel-hda -device hda-duplex`。
@@ -183,6 +210,7 @@ cat /proc/asound/card0/pcm0p/sub0/hw_params   # 播放音乐时非空: 格式/�
 | §2 PCM 帧/周期 | [模块 13](../module-13-audio/) `alsa-play`：手填样本、手配 hw params |
 | §3 ALSA 设备 | 模块 13 `alsa-list` 与 `default` vs `hw:` 对比实验 |
 | §5 PipeWire 图 | 模块 13 `pw-play`：作为节点接入图，`pw-top` 里观察自己 |
+| §5.1 source/sink 对称 | 模块 13 进阶练习 1（改录音方向）；`wpctl set-default -<id>` 切默认麦克风 |
 | §6 portal 屏幕共享 | [04 号文档 §7](04-login-and-session.md) portal 一节 |
 
 ## 9. 延伸阅读

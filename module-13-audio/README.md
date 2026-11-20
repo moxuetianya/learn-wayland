@@ -64,7 +64,7 @@ make
 
 ## 进阶练习
 
-1. **录音方向**：把 `alsa-play` 改成 capture（`SND_PCM_STREAM_CAPTURE` + `readi`），实现 5 秒录音回放；
+1. **录音方向**：把 `alsa-play` 改成 capture（`SND_PCM_STREAM_CAPTURE` + `readi`），实现 5 秒录音回放——录音与播放是同一套 source/sink 对称模型，见 [docs/03 §5.1](../docs/03-audio-stack.md)；
 2. **可视化**：pw-play 的 `on_process` 里把样本幅度画成字符条（`printf("\r%.*s", n, "▮▮▮...")`)——自制电平表；
 3. **双音**：440 + 442 Hz 同时播放，听拍频现象（物理课的浪漫）；
 4. **延迟测量**：pw-play 里打时间戳，对比 `pw-top` 的延迟列，估算端到端延迟 = 量化 × 周期数；
