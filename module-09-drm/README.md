@@ -17,6 +17,8 @@
 - dumb buffer 三部曲：`CREATE_DUMB` → `AddFB2` → `MAP_DUMB + mmap`，
     以及为什么 CPU 往 mmap 区域写一个像素，屏幕立刻就能看到
 - **DRM master 排他性**：为什么本模块必须在纯 TTY、停掉图形会话后运行
+- 纯 TTY 文字控制台的真实身份：fbcon 在内核里光栅化上屏，与 DRM 共用
+    同一条扫描通路（1.6）
 
 ## 1. 背景原理
 
@@ -147,6 +149,58 @@ node 调用 `drmSetMaster()` 成为 master 后才允许 `drmModeSetCrtc` 等，�
 > `TakeDevice` 如何把 fd 交出来、切 VT 时如何收回（revoke / drop master）
 > 以及 seat 与 VT 的关系，见
 > [docs/06 会话设备管理](../docs/06-seat-devices-and-revoke.md)。
+
+### 1.6 彩蛋：纯 TTY 的文字界面是谁画的
+
+`systemctl stop gdm` 后登录的文字 TTY 并非"屏幕天生的样子"——那些字符
+同样是像素，同样有人往 scanout buffer 里写。两个时代两种画法：
+
+- **VGA 文本模式（老 PC）**：显卡进 text mode，VRAM 里存的不是像素而是
+  "字符码 + 颜色属性"（每字符 2 字节），字形点阵烧在显卡 ROM 里由硬件
+  字符发生器实时合成——内核的 `vgacon` 只往 VRAM 写字符码，从不碰像素。
+- **UEFI/KMS 机器（本模块环境）**：固件 GOP 与 DRM 驱动早已把屏幕置于
+  图形模式，文字得内核自己**光栅化**成像素：
+
+```
+VT 子系统 (tty1~ttyN：键盘、转义序列、切屏)
+   ↓
+fbcon（用内核内置点阵字体把字符流渲染成像素；光标、滚动也归它管）
+   ↓ fbdev 抽象层
+DRM 驱动的 fbdev emulation（simpledrm / i915 / amdgpu…）
+   ↓
+scanout buffer——与 drm-demo 的 dumb buffer 同一条扫描通路
+```
+
+**光栅化（rasterization）＝把"形状的抽象描述"换算成"像素网格上该点亮
+哪些点"**。屏幕是离散像素阵列（raster），而字符 `A` 在内存里只是一个
+字节 `0x41`；中间必须有人按字体查表，把字形位图逐位铺进 framebuffer：
+
+```
+'A'(0x41) ──查字体表──▶ 字形位图（1=填前景色, 0=填背景色）──逐位写入──▶ 像素
+
+ 00011000
+ 00111100
+ 01100110
+ 01111110
+ 01100110
+ 01100110
+```
+
+fbcon 用的是编译进内核的点阵字体（VGA 8x16 一类），查表即得、按位
+拷贝，零开销但丑：无抗锯齿、字号死板、连中文都显示不了。桌面矢量字体
+（TrueType/OTF）存的则是贝塞尔曲线轮廓，得靠用户态的 FreeType 运行时
+计算轮廓盖住了哪些像素——那是用户态库的活，内核不干。用户态替代方案
+（kmscon）曾出现过，已废弃，所以今天默认仍是 fbcon。
+
+这段链路顺带解释了本模块的三个细节：
+
+- 退出前恢复 CRTC，本质是把 scanout 交还给 fbcon 的 console fb——
+  不恢复就是坑表里的"退出后 TTY 黑屏/花屏"；
+- fbcon 在内核里直接走 fbdev，**不经过 DRM master 机制**——master
+  排他约束的是用户态（gnome-shell 与 drm-demo 之争），所以文字控制台
+  从来不需要"当 master"；
+- `Ctrl+Alt+F3` 能在图形/文字间来回切换，就是 VT 切换时内核在图形
+  客户端与 fbcon 之间交接 scanout 的结果（交接协议见 docs/06）。
 
 ## 2. 代码走读
 
@@ -293,7 +347,7 @@ CRTC:
 | `modetest -c` 刷一屏 `trying to open device '…'...failed` + `no device found` | 不带 `-M/-D` 时 modetest 只按**内置驱动名清单**探测，`qxl`/`bochs`/`cirrus`/`vboxvideo`/`nvidia-drm`/`xe`/`vkms` 都不在清单里；且 libdrm ≤2.4.11x 的 `-D` 是 busid 而非设备路径 | `sudo modetest -M "$(sudo awk '{print $1}' /sys/kernel/debug/dri/0/name)" -c`；libdrm ≥2.4.123 可用 `-D /dev/dri/card0` |
 | 图案整体斜着拖出"平行四边形" | 填像素时按 `width*4` 而不是 pitch 走行 | 一律用返回的 `pitch/stride`（见 `fill_buffer`，原理见 1.4） |
 | 颜色不对（红蓝互换之类） | fourcc 格式与填充顺序不匹配 | `DRM_FORMAT_XRGB8888` 低字节是 X、随后 R；对照 fourcc 定义 |
-| 退出后 TTY 黑屏/花屏 | 没恢复 CRTC 就销毁了 FB | 本模块已 `drmModeGetCrtc` 保存并恢复；玩脱了就切 VT 或 `start gdm` |
+| 退出后 TTY 黑屏/花屏 | 没恢复 CRTC 就销毁了 FB | 本模块已 `drmModeGetCrtc` 保存并恢复；玩脱了就切 VT 或 `start gdm`；TTY 由谁画出来见 1.6 |
 | 在 SSH 里跑，一切成功但"屏幕没反应" | 你看的物理屏与程序驱动的 connector 不是同一个 | 用 `modetest` 核对 connector 编号，多屏机器上选对目标 |
 
 ## 5. 与真实实现的差距 / 深入话题
@@ -342,6 +396,8 @@ virtio-gpu（QEMU 开 `gl=on`，即 virgl/venus）再排查代码。
   本模块背后的硬件原理：时序参数、EDID 字节结构、DP/HDMI 各自怎么协商
 - [DRM/KMS 内核文档（Mode Setting 章节）](https://docs.kernel.org/gpu/drm-kms.html) —
   dumb buffer、KMS 对象、master 语义的权威出处
+- [内核 fbcon 文档](https://docs.kernel.org/fb/fbcon.html) —
+  1.6 的权威出处：文字控制台如何渲染、如何与 VT 交接
 - [libdrm 仓库](https://gitlab.freedesktop.org/mesa/drm) — 本模块用的
   `xf86drm.h` / `xf86drmMode.h` 与 `modetest` 示例工具
 - [kmscube](https://gitlab.freedesktop.org/mesa/kmscube) — 在本模块基础上
