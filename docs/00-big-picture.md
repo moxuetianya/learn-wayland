@@ -161,7 +161,8 @@ X11 通过 XWayland 兼容层继续存活：GNOME/KDE 的 compositor 内嵌一�
 
 ```
 00 全景地图 ──┬─▶ 01 显卡与显示 ──┬─▶ 02 从电源到像素(启动链路)
-              │                   └─▶ 05 KMS/EDID/链路协商
+              │                   ├─▶ 05 KMS/EDID/链路协商
+              │                   └─▶ 07 fd 传递/共享内存
               ├─▶ 03 音频栈
               └─▶ 04 登录与会话 ──┬─▶ 02 的后半段(用户空间部分)
                                   └─▶ 06 会话设备/revoke/多座席
@@ -185,7 +186,9 @@ X11 通过 XWayland 兼容层继续存活：GNOME/KDE 的 compositor 内嵌一�
 | **page flip** | 在 vblank 期间原子地切换扫描的 framebuffer，防撕裂 | [01](01-gpu-and-display.md) |
 | **vblank** | CRT 时代的垂直消隐期，如今是换帧的安全窗口 | [01](01-gpu-and-display.md) |
 | **wl_shm** | 「共享内存 buffer」协议：应用传 fd 给 compositor | 模块 2 |
-| **dmabuf** | 「显存 buffer」跨进程共享机制，GPU 渲染的零拷贝通路 | [01](01-gpu-and-display.md) |
+| **dmabuf** | 「显存 buffer」跨进程共享机制，GPU 渲染的零拷贝通路 | [01](01-gpu-and-display.md) · [07](07-fd-passing-and-shared-memory.md) |
+| **SCM_RIGHTS** | AF_UNIX 上传 fd 的机制（内核装一份 dup；TCP/UDP 不行） | [07](07-fd-passing-and-shared-memory.md) |
+| **memfd** | 匿名共享内存文件；`mmap` + 传 fd 是 Wayland `wl_shm` 的基础 | [07](07-fd-passing-and-shared-memory.md) |
 | **EGL/OpenGL/Vulkan** | 应用指挥 GPU 干活的 API，由 Mesa 实现 | [01](01-gpu-and-display.md) |
 | **GBM** | Mesa 提供的「给 EGL 分配可扫描显存 buffer」的抽象 | [01](01-gpu-and-display.md) |
 | **evdev** | 内核输入设备的统一接口 `/dev/input/event*` | 模块 10 |

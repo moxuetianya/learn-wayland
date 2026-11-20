@@ -102,6 +102,10 @@ logind 会把 fd 通过 `sd_notify(FDSTORE=1)` **存进 PID1**（`session_device
 
 限制：一条 D-Bus 消息最多带 **253** 个 fd（`SCM_MAX_FD`）。
 
+> `SCM_RIGHTS` 的底层机制（为什么只有 AF_UNIX 可以、TCP/UDP 会静默丢弃、
+> 0 字节 payload 的坑、以及 memfd/共享内存），见
+> [07 fd 传递与共享内存](07-fd-passing-and-shared-memory.md)。
+
 ---
 
 ## 2. 为什么不能只靠 ACL

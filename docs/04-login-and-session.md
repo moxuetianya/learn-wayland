@@ -250,4 +250,4 @@ journalctl -b 0 | grep -iE 'logind|gdm|session' | tail -20
 
 ---
 
-至此六篇原理地图完整。回到 [README](../README.md) 查看课程全貌，或直接进入 [模块 1](../module-01-connection/) 开始动手。
+至此七篇原理地图完整。回到 [README](../README.md) 查看课程全貌，或直接进入 [模块 1](../module-01-connection/) 开始动手。

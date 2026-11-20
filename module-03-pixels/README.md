@@ -207,6 +207,8 @@ Ctrl+C 退出，打印 `=== 模块 3 完成 ===`。
 
 ## 7. 延伸阅读
 
+- [docs/07 fd 传递与共享内存](../docs/07-fd-passing-and-shared-memory.md) —
+  `wl_shm` 的池（memfd）怎么跨进程变成同一块物理内存
 - [drm_fourcc.h](https://github.com/torvalds/linux/blob/master/include/uapi/drm/drm_fourcc.h) — 格式命名与字节序的权威定义
 - [wl_shm 协议定义](https://wayland.freedesktop.org/docs/html/apa.html#protocol-spec-wl_shm) — pool/buffer 与格式列表
 - [wl_surface.damage_buffer](https://wayland.freedesktop.org/docs/html/apa.html#protocol-spec-wl_surface) — damage 的语义

@@ -310,6 +310,7 @@ sudo systemctl start gdm
 ## 8. 延伸阅读
 
 - [docs/06 会话设备管理](../docs/06-seat-devices-and-revoke.md) — 生产合成器为什么要把 `open()` 换成 logind `TakeDevice`、以及切 VT 时内核如何收回设备
+- [docs/07 fd 传递与共享内存](../docs/07-fd-passing-and-shared-memory.md) — 客户端 buffer 的 fd 是怎么跨进程变成同一块内存的（`SCM_RIGHTS` + `memfd`）
 - [DRM/KMS 用户态 API 文档](https://docs.kernel.org/gpu/drm-kms.html) — 内核官方
 - [tinywl](https://gitlab.freedesktop.org/wlroots/wlroots/-/tree/master/tinywl) — wlroots 的最小合成器，可视为"本模块 + xdg-shell + page flip"
 - [Weston](https://gitlab.freedesktop.org/wayland/weston) — 官方参考合成器

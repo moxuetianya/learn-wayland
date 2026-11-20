@@ -93,4 +93,4 @@ bash inspect.sh          # 系统性观察清单 (6 章)
 - [logind D-Bus 接口](https://www.freedesktop.org/wiki/Software/systemd/logind/) — TakeControl/TakeDevice 的权威定义
 - [sddm 源码](https://github.com/sddm/sddm) — 读一个真实显示管理器的会话编排
 
-回到 [课程地图](../README.md)。至此 14 个模块 + 6 篇原理文档全部完成 🎉
+回到 [课程地图](../README.md)。至此 14 个模块 + 7 篇原理文档全部完成 🎉

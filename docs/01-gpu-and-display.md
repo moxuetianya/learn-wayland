@@ -99,6 +99,10 @@ Wayland 世界里，应用画好的 buffer 要交给 compositor，compositor 合
 
 dmabuf 是 Linux 通用的「跨设备/跨进程 buffer 句柄」机制，也是 Wayland 高性能的基石：浏览器渲染、视频解码、游戏画面都走这条路。
 
+> 这两种「传 fd」到底在内核里做了什么（`SCM_RIGHTS`、dup 语义、为什么
+> TCP 不行、`memfd` 怎么建），见
+> [07 fd 传递与共享内存](07-fd-passing-and-shared-memory.md)。
+
 ## 5. 显示输出通路：像素如何离开显卡
 
 这是理解模块 9 的核心。一块现代显卡里有 N 组显示流水线，每组三段：
