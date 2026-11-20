@@ -96,6 +96,42 @@ KMS 的 API 是两层结构：`drmModeGetResources()` 只返回四组**对象 ID
 可能大于 `width*4`（行对齐），所以填充像素必须按 stride 走行——`fill_buffer()`
 里那个看起来多余的 `stride` 参数是 KMS 编程的第一课。
 
+这句"第一课"背后是一对容易混淆的概念——**屏幕 stride 与 buffer stride
+可能不同**：
+
+- **屏幕 stride**：图像显示宽度对应的"逻辑"跨度，= 宽度 × 每像素字节数。
+  本模块 XRGB8888 下即 `width * 4`。
+- **buffer stride**：内存中从一行开头到下一行开头的"物理"字节距离，即
+  `CREATE_DUMB` 返回的 pitch（此语境下 pitch 与 stride 同义）。它包含
+  行尾填充，可以大于屏幕 stride。
+
+不相等的根源是**内存对齐与硬件限制**：GPU、显示控制器通常要求每行数据
+的起始地址或字节数满足特定对齐规则（16 字节、32 像素、256 字节等，因
+硬件而异），驱动就在每行末尾垫上填充字节（padding）。例如一个 533 像素
+宽的 RGB565 图像，屏幕 stride = 533×2 = 1066 字节，实际 buffer stride
+却可能是 544×2 = 1088 字节——多出的 11 个像素（22 字节）就是填充：
+
+```
+ ┌──────────────────────────────────┬─────────────┐
+ │         533 个有效像素            │ 11 像素填充 │
+ │          （1066 字节）            │ （22 字节） │
+ └──────────────────────────────────┴─────────────┘
+ ←────────── 屏幕 stride ──────────→
+ ←───────────── buffer stride（pitch = 1088 字节）─────────────→
+```
+
+程序若按屏幕宽度走行（`width*4`），从第二行起行首逐行错位，图像便斜着
+拖出"平行四边形"或花屏——第 4 节坑表与练习 3 的"stride 实验室"就是它。
+这个坑远不止 dumb buffer 有：微软文档明确指出**两个尺寸相同的视频帧
+缓冲区可以有完全不同的 stride**，处理视频图像必须把 stride 纳入考虑；
+Linux 内核也修过同类 bug——驱动计算映射 stride 时误用了 framebuffer
+宽度而非用户指定的 stride，导致硬件读错数据位置甚至触发缺页错误。
+
+一句话理解：stride 是一行数据在内存中实际占用的"车位宽度"，屏幕显示
+只用其中"有效宽度"那段，但对齐要求每行停够整数个"车位"，多出的空位
+就是 padding。定位每行起始地址永远以 buffer 实际返回的 pitch 为准——
+`fill_buffer()` 里 `ptr + y * stride` 走的就是这个值。
+
 ### 1.5 DRM master：为什么必须 TTY + 停图形会话
 
 模式设置会**改变所有人看到的屏幕**，所以内核把它设为特权操作：对 card
@@ -255,7 +291,7 @@ CRTC:
 | `open /dev/dri/card0: Permission denied` | 非 root 且不在 video 组 | `sudo` 运行（学习项目）；render node 无此问题但也做不了模式设置 |
 | `找不到已连接且带有效模式的 connector` | VM 显卡未暴露模式/显示器未直通 | 检查 VM 显示设置（QEMU 建议 virtio-gpu）；用 `modetest -M <驱动名> -c` 对照 |
 | `modetest -c` 刷一屏 `trying to open device '…'...failed` + `no device found` | 不带 `-M/-D` 时 modetest 只按**内置驱动名清单**探测，`qxl`/`bochs`/`cirrus`/`vboxvideo`/`nvidia-drm`/`xe`/`vkms` 都不在清单里；且 libdrm ≤2.4.11x 的 `-D` 是 busid 而非设备路径 | `sudo modetest -M "$(sudo awk '{print $1}' /sys/kernel/debug/dri/0/name)" -c`；libdrm ≥2.4.123 可用 `-D /dev/dri/card0` |
-| 图案整体斜着拖出"平行四边形" | 填像素时按 `width*4` 而不是 pitch 走行 | 一律用返回的 `pitch/stride`（见 `fill_buffer`） |
+| 图案整体斜着拖出"平行四边形" | 填像素时按 `width*4` 而不是 pitch 走行 | 一律用返回的 `pitch/stride`（见 `fill_buffer`，原理见 1.4） |
 | 颜色不对（红蓝互换之类） | fourcc 格式与填充顺序不匹配 | `DRM_FORMAT_XRGB8888` 低字节是 X、随后 R；对照 fourcc 定义 |
 | 退出后 TTY 黑屏/花屏 | 没恢复 CRTC 就销毁了 FB | 本模块已 `drmModeGetCrtc` 保存并恢复；玩脱了就切 VT 或 `start gdm` |
 | 在 SSH 里跑，一切成功但"屏幕没反应" | 你看的物理屏与程序驱动的 connector 不是同一个 | 用 `modetest` 核对 connector 编号，多屏机器上选对目标 |
