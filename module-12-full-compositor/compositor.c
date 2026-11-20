@@ -12,8 +12,8 @@
  *   - Proper keyboard keymap via xkbcommon
  *
  * Build:   make
- * Run:     sudo ./compositor
- * Connect: WAYLAND_DISPLAY=wayland-1 weston-simple-shm
+ * Run:     sudo env XDG_RUNTIME_DIR=/run/user/$(id -u) ./compositor
+ * Connect: WAYLAND_DISPLAY=<以启动打印为准，gdm 停掉后多为 wayland-0> weston-simple-shm
  * Exit:    Esc, Ctrl+Alt+Backspace. Close window: Alt+F4
  */
 

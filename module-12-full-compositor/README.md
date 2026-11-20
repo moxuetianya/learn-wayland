@@ -282,11 +282,19 @@ sudo systemctl stop gdm          # 或 sddm / lightdm
 # 2. 编译并启动（首次 make 会先生成 xdg-shell 胶水）
 cd module-12-full-compositor
 make
-sudo ./compositor
+# sudo 默认清空 XDG_RUNTIME_DIR，代码会回退到 /tmp/wayland-runtime 建 socket
+# （compositor.c 的 fallback），而普通用户客户端只在自己的 XDG_RUNTIME_DIR
+# 里找——目录对不上必然连不上。显式传入，让 socket 落在常规位置：
+sudo env XDG_RUNTIME_DIR=/run/user/$(id -u) ./compositor
 
 # 3. 另一个 TTY（Ctrl+Alt+F4）或 SSH 里连客户端
-WAYLAND_DISPLAY=wayland-1 weston-simple-shm    # 模块 11 的老朋友，仍然可用
-WAYLAND_DISPLAY=wayland-1 weston-terminal      # xdg-shell 客户端，能打字了！
+#    ⚠️ 名字以 compositor 启动时打印的 WAYLAND_DISPLAY=xxx 为准：
+#    wl_display_add_socket_auto() 从 wayland-0 起找第一个空闲名；gdm 停掉后
+#    残留的 wayland-0 无人持有会被回收复用，所以实际多半是 wayland-0
+WAYLAND_DISPLAY=wayland-0 weston-simple-shm    # 模块 11 的老朋友，仍然可用
+WAYLAND_DISPLAY=wayland-0 weston-terminal      # xdg-shell 客户端，能打字了！
+#    （若坚持裸 sudo ./compositor：socket 落在 /tmp/wayland-runtime，客户端
+#     要补 XDG_RUNTIME_DIR=/tmp/wayland-runtime，两个变量缺一不可）
 ```
 
 有 xdg-shell 之后，**自绘装饰的 shm 客户端**（如 weston-terminal：自己画
@@ -312,6 +320,7 @@ wl_output、data-device-manager、linux-dmabuf 等一整串本模块没有的协
 | `Package libdrm/libinput not found` / `fatal error: xf86drm.h` | 缺服务端开发包（报错链同模块 9） | `bash setup-vm.sh`，或按模块 11 前置补装 |
 | make 报找不到 `xdg-shell.xml` | 未装 wayland-protocols 或 pkg-config 探测不到 | 安装后确认 `pkg-config --variable=pkgdatadir wayland-protocols` 有输出 |
 | 链接报 `undefined reference to xdg_wm_base_interface` | 手动 `cc compositor.c` 漏了生成物 | 用 make，`xdg-shell-protocol.o` 必须一起链 |
+| 客户端崩：`Assertion 'display->display' failed` | `wl_display_connect` 返回 NULL——compositor 没在跑，或 socket 名/目录对不上：sudo 清了 XDG_RUNTIME_DIR 使 socket 落在 `/tmp/wayland-runtime`，且 auto 命名通常抢到 `wayland-0` 而非 `wayland-1` | `ss -xl \| grep wayland` 确认在监听；按启动打印的 `WAYLAND_DISPLAY=` 连接；启动用 `sudo env XDG_RUNTIME_DIR=... ./compositor`，或客户端补 `XDG_RUNTIME_DIR=/tmp/wayland-runtime` |
 | 客户端连上后秒退 / 协议错误 | 客户端需要本模块未实现的 global（wl_output、data-device-manager…）或 EGL | 换 weston-terminal / weston-simple-shm 验证 |
 | 屏幕上找不到鼠标指针 | `pointer_set_cursor` 空实现，也没画默认光标 | 预期行为，指针追踪仍在工作；补画光标见练习 4 |
 | 点窗口内控件位置偏移/不灵 | motion 转发的是屏幕全局坐标，客户端按 surface 局部坐标解释 | 已知简化，见练习 3 |
