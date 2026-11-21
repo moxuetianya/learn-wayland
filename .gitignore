@@ -22,3 +22,4 @@ module-14-session/session-info
 # wayland-scanner 生成物
 *-protocol.h
 *-protocol.c
+.global-opencode
