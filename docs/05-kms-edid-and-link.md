@@ -527,7 +527,8 @@ cd ../module-09-drm && make && sudo ./drm-info
 
 > **qxl 的提醒**：只有 `card0`、没有 `renderD128`。模块 9 完全够用，但模块
 > 11/12 要用 GBM/EGL 时会卡在找 render node。做那两章建议把 QEMU 换成
-> **virtio-gpu**（`gl=on`，即 virgl/venus）。
+> **virtio-gpu**（`gl=on`，即 virgl/venus）。两种虚拟 GPU 的架构对比、
+> virgl 如何借用宿主 GPU，见 [01 号文档 §7](01-gpu-and-display.md)。
 
 ---
 

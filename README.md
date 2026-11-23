@@ -61,7 +61,7 @@ learn-wayland/
 ├── Makefile                      # 顶层构建 (make client|server|system)
 ├── docs/                         # ★ 原理丛书（系统性讲解）
 │   ├── 00-big-picture.md         #   Linux 现代 GUI 全景地图（索引）
-│   ├── 01-gpu-and-display.md     #   显卡的作用: 渲染/扫描输出/DRM-KMS
+│   ├── 01-gpu-and-display.md     #   显卡的作用: 渲染/扫描输出/DRM-KMS/虚拟GPU
 │   ├── 02-boot-to-pixels.md      #   从按下电源到看到桌面
 │   ├── 03-audio-stack.md         #   ALSA/PipeWire 音频栈
 │   └── 04-login-and-session.md   #   登录/会话/DM/app 如何用 Wayland

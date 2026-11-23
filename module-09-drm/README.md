@@ -370,7 +370,9 @@ plane / sprite（让视频帧不进合成队列直接叠上屏幕）、多 CRTC 
 继续做模块 11/12 要注意 **render node**：GBM/EGL 需要
 `/dev/dri/renderD128`，而 qxl 这类纯 2D 虚拟显卡只暴露 `card0`。如果你在
 qxl 的 VM 里看到 `gbm_create_device` / `eglInitialize` 失败，先换成
-virtio-gpu（QEMU 开 `gl=on`，即 virgl/venus）再排查代码。
+virtio-gpu（QEMU 开 `gl=on`，即 virgl/venus）再排查代码——qxl 与 virtio-gpu
+的架构对比、virgl 如何借用宿主 GPU，见
+[docs/01 §7](../docs/01-gpu-and-display.md)。
 
 ## 6. 练习
 

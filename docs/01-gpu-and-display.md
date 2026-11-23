@@ -194,7 +194,67 @@ CRTC 是自顾自的读稿机：它只认「framebuffer 指针」，不知道应
 
 **同一时刻只能有一个 DRM master**（通常就是 compositor），这是内核防止多个程序抢屏幕的互斥机制。你在模块 9 里调用的 `drmSetMaster()` 就是在申请这把钥匙；在已有桌面会话的机器上运行会失败——那一刻你就理解了为什么 compositor 必须从干净 TTY 启动。
 
-## 7. 把整条路连起来
+## 7. 虚拟 GPU：VM 里的「显卡」是真是假
+
+课程模块 9-12 全程在 QEMU/KVM 虚拟机里跑，那里没有真显卡，只有 QEMU「扮演」出来的设备。两个主流选择——**qxl** 与 **virtio-gpu**——行为模型完全不同：
+
+| | qxl | virtio-gpu |
+|---|---|---|
+| 定位 | 为 Spice 远程桌面定制的老设备 | 标准 virtio 半虚拟化设备（新部署的推荐默认） |
+| 客机驱动 | `xserver-xorg-video-qxl`，仅 X11 | 内核 `virtio_gpu` + Mesa，X11/Wayland 通用 |
+| 2D 路径 | 客机发绘图命令，QEMU 在**宿主机 CPU** 上逐条模拟执行 | 客机自己画好整帧，DMA 零拷贝交给宿主 |
+| 3D 加速 | 无 | virgl / venus（见下） |
+| render node | **无**，只暴露 `card0` | virgl 开启后有 `renderD128` |
+
+先纠正两个常见误解：
+
+1. **qxl 的「2D 加速」与 GPU 硬件无关**——那些绘图命令是 QEMU 进程在宿主机
+   CPU 上模拟执行的。virtio-gpu 的 2D 模式思路反而更朴素：客机（CPU 软件渲染）
+   把整帧画好，经 virtio 共享内存直接送出，通常更快、更省 CPU、更稳定。
+2. **virtio-gpu 默认也不用宿主机的物理 GPU**。要不要「借」它的算力，取决于
+   有没有开 **virgl**（QEMU 侧 `-device virtio-vga-gl` + 显示后端 `gl=on`）：
+
+```
+不开 virgl:   客机 CPU 画好整帧 ──DMA──▶ 宿主只负责显示/编码
+开 virgl:     客机 Mesa（virgl 驱动）
+                │  OpenGL 调用打包成 virgl 指令，走 virtqueue
+                ▼
+              QEMU：virglrenderer 把指令翻译成宿主 OpenGL
+                ▼
+              宿主 OpenGL 驱动 ──▶ 物理 GPU 真的在算
+```
+
+开启后客机里 `glxinfo` 的 renderer 显示为 `virgl`，OpenGL 版本号由宿主栈决定；
+宿主没有 GPU 时 virgl 会退回 llvmpipe 软件渲染，反而更慢。再往上一档是
+**venus**（Vulkan 转发）和 GPU 直通（passthrough），本课程用不到。
+
+> **与课程的接口**：模块 11/12 的 GBM/EGL 需要 render node（§6 的
+> `renderD128`），纯 2D 的 qxl 不提供——做那两章要把 VM 换成 virtio-gpu
+> 并开 `gl=on`。两种设备在 EDID/模式表上的实测差异（qxl 连 EDID 属性都
+> 没有）见 [05 号文档 §8](05-kms-edid-and-link.md)。
+
+### 7.1 Spice 协议与虚拟 GPU：分层解耦，合作深度不同
+
+「用 Spice 是不是就得配 qxl？」——不是，它们在不同的层：
+
+```
+客机应用 ──▶ 客机驱动 ──▶ 虚拟 GPU 设备(QEMU) ──▶ 显示后端
+  (画)        (qxl / virtio_gpu)   (产生画面)      (Spice / VNC / 本地窗口)
+```
+
+显示后端与设备**自由组合**，但合作深度不同：
+
+| 组合 | 效果 |
+|------|------|
+| qxl + Spice | 设计场景：绘图命令几乎一一对应翻译成 Spice 协议消息，命令级增量传输 |
+| qxl + VNC | 不推荐：QEMU 得把命令软件渲染成帧，两头吃亏 |
+| virtio-gpu + Spice | 现代通用组合：帧级差分 + vdagent（剪贴板/分辨率跟随） |
+| virtio-vga-gl + Spice `gl=on` | 宿主 GPU 渲染后串流 |
+
+真正的耦合在另一头：**选了 qxl 就该配 Spice**，离开 Spice 它的优势全没了；
+而剪贴板同步、分辨率自适应这些能力来自**协议与 vdagent**，与虚拟 GPU 选哪个无关。
+
+## 8. 把整条路连起来
 
 现在用一张图总结「一帧像素」在硬件层面的完整路径（对照 [00 号文档 §3.1](00-big-picture.md)）：
 
@@ -217,7 +277,7 @@ CRTC 是自顾自的读稿机：它只认「framebuffer 指针」，不知道应
 
 **两件事没有变：framebuffer 是像素的家，CRTC 是唯一的出口。**
 
-## 8. 动手观察清单
+## 9. 动手观察清单
 
 在你的 Linux 机器（或课程 VM）上验证本文：
 
@@ -241,9 +301,9 @@ sudo cat /sys/kernel/debug/dri/0/crtc-0/vblank/ 2>/dev/null || \
 grep -r . /sys/kernel/debug/dri/0/crtc-*/ 2>/dev/null | head
 ```
 
-> 虚拟机注意：QEMU/KVM 里 GPU 是 `virtio-gpu`（设备节点**不一定叫 card0**，与 simpledrm 共存时常见 `card1`，用 `ls /dev/dri/` 确认——课程程序会自动扫描，也可用 `DRM_CARD=/dev/dri/cardX` 指定），VMware 里是 `vmwgfx`。它们同样完整实现 DRM/KMS，模块 9-12 在 VM 里照常工作。
+> 虚拟机注意：QEMU/KVM 里 GPU 是 `virtio-gpu`（设备节点**不一定叫 card0**，与 simpledrm 共存时常见 `card1`，用 `ls /dev/dri/` 确认——课程程序会自动扫描，也可用 `DRM_CARD=/dev/dri/cardX` 指定），VMware 里是 `vmwgfx`。它们同样完整实现 DRM/KMS，模块 9-12 在 VM 里照常工作。虚拟 GPU 设备本身的选型与原理见 §7。
 
-## 9. 与课程模块的关联
+## 10. 与课程模块的关联
 
 | 本文章节 | 对应模块 |
 |----------|----------|
@@ -251,12 +311,15 @@ grep -r . /sys/kernel/debug/dri/0/crtc-*/ 2>/dev/null | head
 | §5 显示通路 Connector→Encoder→CRTC | 模块 9 的 `find_crtc()` 遍历逻辑 |
 | §5.2 vblank/撕裂 | [模块 6](../module-06-frame-cb/) 帧回调；模块 11/12 的 repaint |
 | §6 DRM master | 模块 9 `drmSetMaster()`；[04 号文档](04-login-and-session.md) 会讲 logind 如何授权 |
+| §7 虚拟 GPU：qxl vs virtio-gpu、virgl | 模块 11/12 的 render node 前置；实测差异见 [05 §8](05-kms-edid-and-link.md) |
 | §7 dmabuf 生产路线 | 超出本课程范围，见延伸阅读 |
 
-## 10. 延伸阅读
+## 11. 延伸阅读
 
 - [DRM/KMS 内核文档](https://docs.kernel.org/driver-api/drm.html) — 内核侧权威文档
 - [Mesa 项目](https://www.mesa3d.org/) — GPU 驱动栈
+- [virtio-gpu 内核驱动源码](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/drivers/gpu/drm/virtio) — 客机侧 DRM 实现（`virtgpu_drv.c`）
+- [virglrenderer](https://gitlab.freedesktop.org/virgl/virglrenderer) — 宿主侧把 virgl 指令翻译成 OpenGL 的库
 - [etnaviv 项目的一篇 GEM/Buffer 讲解](https://gitlab.freedesktop.org/mesa/mesa) — Mesa 源码
 - 延伸动手：把模块 11 的合成改成 `drmModePageFlip` 异步翻页（有 vblank 事件、无撕裂），是天然的进阶练习
 
